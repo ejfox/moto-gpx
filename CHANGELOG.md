@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.1] — 2026-04-21
+
+### Added
+
+- **`--svg` flag (default on):** every run now writes `preview-map.svg` and `preview-elevation.svg` to the output folder. Map includes the track, stage start/end markers, town labels (from places.geojson if OSM enrichment ran), scale bar, and annotated markers for peak elevation, top speed, and peak cornering G. Elevation profile shows the full distance-vs-elevation curve with peak/trough labeled.
+- New dep: **`d3`** (v7) — used by `src/svg.js` for Mercator projection with `fitExtent`, and scales/shapes for the elevation profile. First runtime dep in the tool — the tradeoff was worth it for correct projection math.
+
+### Fixed
+
+- **`biggest_climb` / `biggest_descent` / `highest_point` / `lowest_point` in superlatives** were reporting the first trkpt's elevation as both extremes due to an object-property shadowing bug (`p.ele > high.ele` where the stored key was `ele_m`). Now correctly tracks true extremes.
+- **`longest_descent`** was accumulating descents across multiple peaks for a single reported drop. Renamed to `biggest_descent` and computed symmetrically to `biggest_climb` (max drop from running max).
+
 ## [0.4.0] — 2026-04-21
 
 Every run now ends with a "superlatives" banner — the fun facts you'd want in

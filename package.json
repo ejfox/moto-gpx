@@ -1,6 +1,6 @@
 {
   "name": "moto-gpx",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Dump a folder of GPX tracks, get QGIS-ready GeoJSON layers for multi-day motorcycle trip maps — tracks, stops, speed bins, photos, weather, OSM roads/places, state crossings, sun position, OSRM route comparison, and AWS SRTM DEM.",
   "type": "module",
   "bin": {
@@ -9,7 +9,16 @@
   "engines": {
     "node": ">=18"
   },
-  "keywords": ["gpx", "geojson", "motorcycle", "mapping", "d3", "qgis", "exif", "gps"],
+  "keywords": [
+    "gpx",
+    "geojson",
+    "motorcycle",
+    "mapping",
+    "d3",
+    "qgis",
+    "exif",
+    "gps"
+  ],
   "author": "EJ Fox <ejfox@ejfox.com>",
   "license": "MIT",
   "repository": {
@@ -19,5 +28,8 @@
   "bugs": {
     "url": "https://github.com/ejfox/moto-gpx/issues"
   },
-  "homepage": "https://ejfox.github.io/moto-gpx/"
+  "homepage": "https://ejfox.github.io/moto-gpx/",
+  "dependencies": {
+    "d3": "^7.9.0"
+  }
 }

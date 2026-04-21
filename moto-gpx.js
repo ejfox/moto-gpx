@@ -21,6 +21,7 @@ import { computeCrossings } from './src/enrich/crossings.js';
 import { attachSunPosition } from './src/enrich/sun.js';
 import { writeStarterStyles } from './src/qml.js';
 import { computeSuperlatives, printSuperlatives } from './src/superlatives.js';
+import { writeSvgPreviews } from './src/svg.js';
 
 // -------- args --------
 const argv = process.argv.slice(2);
@@ -63,6 +64,9 @@ Enrichments (opt-in; require network):
 Superlatives (GPS-derived fun stats, on by default):
   --no-superlatives    Skip the post-run banner
 
+SVG previews (on by default):
+  --no-svg             Skip writing preview-map.svg + preview-elevation.svg
+
 Examples:
   moto-gpx ~/trips/big-sur --media ~/trips/big-sur --out ./bs-out
   moto-gpx ./trip --dem --enrich weather,osm,sun
@@ -93,6 +97,7 @@ const opts = {
   demContour: 0,
   enrich: new Set(),
   superlatives: true,
+  svg: true,
 };
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i];
@@ -122,6 +127,8 @@ for (let i = 1; i < argv.length; i++) {
   else if (a === '--dem-contour') opts.demContour = Number(argv[++i]);
   else if (a === '--superlatives') opts.superlatives = true;
   else if (a === '--no-superlatives') opts.superlatives = false;
+  else if (a === '--svg') opts.svg = true;
+  else if (a === '--no-svg') opts.svg = false;
   else if (a === '--enrich') {
     const list = argv[++i].split(',').map(s => s.trim()).filter(Boolean);
     if (list.includes('all')) {
@@ -504,6 +511,11 @@ async function main() {
     ? computeSuperlatives(deduped, perStage, opts, computedTotals)
     : null;
 
+  let svgOut = null;
+  if (opts.svg) {
+    svgOut = writeSvgPreviews(opts.out, perStage, deduped, opts, superlatives);
+  }
+
   const summary = {
     trip: opts.name,
     generated: new Date().toISOString(),
@@ -553,6 +565,8 @@ async function main() {
   }
   if (opts.styles) console.log(`    styles/ (.qml QGIS styles)`);
   console.log(`    stats.json`);
+  if (svgOut?.map) console.log(`    preview-map.svg`);
+  if (svgOut?.elevation) console.log(`    preview-elevation.svg`);
 
   if (superlatives) printSuperlatives(superlatives, opts);
 }
