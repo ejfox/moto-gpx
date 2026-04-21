@@ -3,15 +3,15 @@
   
   <style>
     :root {
-      --fg: #111;
-      --muted: #555;
-      --frame: #111;
-      --fill: #ddd;
-      --peak: #c00;
-      --trough: #2a7a2a;
-      --accent-1: #7a4500;
-      --accent-2: #c00;
-      --accent-3: #3a3a9a;
+      --fg: #e8e6e3;
+      --muted: #9aa0a6;
+      --frame: #8a8a8a;
+      --fill: #2b2b2b;
+      --peak: #ff6b6b;
+      --trough: #6bd16b;
+      --accent-1: #ffb870;
+      --accent-2: #ff6b6b;
+      --accent-3: #8aa8ff;
     }
     .mg-bg { fill: none; }
     .mg-fg { fill: var(--fg); }

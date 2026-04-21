@@ -38,33 +38,26 @@ function pickProjection(bbox) {
 }
 
 // ---------- theme styles ----------
-// Colors drive off CSS custom properties so the SVG flips to dark mode on its
-// own when embedded on a dark page (or when the OS theme is dark).
-const THEME_STYLE = `
+// SVGs loaded via <img> don't receive the page's prefers-color-scheme — CSS
+// media queries inside a standalone SVG evaluate against the SVG's own
+// (effectively "light") environment. So: produce two concrete palettes and
+// let the embedding page pick via <picture> + media-conditional <source>.
+function themeStyle(dark) {
+  const c = dark
+    ? { fg: '#e8e6e3', muted: '#9aa0a6', frame: '#8a8a8a', fill: '#2b2b2b', peak: '#ff6b6b', trough: '#6bd16b', acc1: '#ffb870', acc2: '#ff6b6b', acc3: '#8aa8ff' }
+    : { fg: '#111',    muted: '#555',    frame: '#111',    fill: '#ddd',    peak: '#c00',    trough: '#2a7a2a', acc1: '#7a4500', acc2: '#c00',    acc3: '#3a3a9a' };
+  return `
   <style>
     :root {
-      --fg: #111;
-      --muted: #555;
-      --frame: #111;
-      --fill: #ddd;
-      --peak: #c00;
-      --trough: #2a7a2a;
-      --accent-1: #7a4500;
-      --accent-2: #c00;
-      --accent-3: #3a3a9a;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --fg: #e8e6e3;
-        --muted: #9aa0a6;
-        --frame: #8a8a8a;
-        --fill: #2b2b2b;
-        --peak: #ff6b6b;
-        --trough: #6bd16b;
-        --accent-1: #ffb870;
-        --accent-2: #ff6b6b;
-        --accent-3: #8aa8ff;
-      }
+      --fg: ${c.fg};
+      --muted: ${c.muted};
+      --frame: ${c.frame};
+      --fill: ${c.fill};
+      --peak: ${c.peak};
+      --trough: ${c.trough};
+      --accent-1: ${c.acc1};
+      --accent-2: ${c.acc2};
+      --accent-3: ${c.acc3};
     }
     .mg-bg { fill: none; }
     .mg-fg { fill: var(--fg); }
@@ -89,9 +82,10 @@ const THEME_STYLE = `
     .mg-start { fill: var(--trough); stroke: var(--frame); stroke-width: 0.5; }
     .mg-end { fill: var(--peak); stroke: var(--frame); stroke-width: 0.5; }
   </style>`;
+}
 
 // ---------- map preview ----------
-export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
+export function renderMapSvg(perStage, deduped, opts, superlatives, places, dark = false) {
   if (!deduped.length || !perStage.length) return null;
 
   const MAX_W = 900;
@@ -242,7 +236,7 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
-  ${THEME_STYLE}
+  ${themeStyle(dark)}
   ${titleSvg}
   ${frame}
   ${track}
@@ -257,7 +251,7 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
 // ---------- profile charts (shared shape) ----------
 // data: [{ x, y }] where x is meters, y is the measured value
 // peakLabel / troughLabel: e.g. '353m peak', '90 mph top', null to skip
-function renderProfile({ title, data, yUnit, xAxisLabel, highlightMax, highlightMin }) {
+function renderProfile({ title, data, yUnit, xAxisLabel, highlightMax, highlightMin, dark = false }) {
   if (data.length < 3) return null;
 
   const W = 900;
@@ -314,7 +308,7 @@ function renderProfile({ title, data, yUnit, xAxisLabel, highlightMax, highlight
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
-  ${THEME_STYLE}
+  ${themeStyle(dark)}
   <text class="mg-label" x="${PAD.left}" y="20" font-size="13" font-weight="bold">${esc(title)}</text>
   <path class="mg-area" d="${areaD}"/>
   <path class="mg-line" d="${lineD}"/>
@@ -328,7 +322,7 @@ function renderProfile({ title, data, yUnit, xAxisLabel, highlightMax, highlight
 }
 
 // ---------- elevation profile ----------
-export function renderElevationSvg(deduped) {
+export function renderElevationSvg(deduped, dark = false) {
   const data = [];
   let cumD = 0;
   for (let i = 0; i < deduped.length; i++) {
@@ -342,13 +336,14 @@ export function renderElevationSvg(deduped) {
     xAxisLabel: 'kilometers',
     highlightMax: p => `${Math.round(p.y)}m peak`,
     highlightMin: true,
+    dark,
   });
 }
 
 // ---------- speed profile ----------
 // 5-second sliding window smoothing (same as max_speed in stats) so single
 // GPS jitter points don't spike the chart.
-export function renderSpeedSvg(deduped) {
+export function renderSpeedSvg(deduped, dark = false) {
   const SPEED_WINDOW_MS = 5000;
   const data = [];
   let cumD = 0;
@@ -376,6 +371,7 @@ export function renderSpeedSvg(deduped) {
     xAxisLabel: 'kilometers',
     highlightMax: p => `${Math.round(p.y)} mph top`,
     highlightMin: false,
+    dark,
   });
 }
 
@@ -399,19 +395,25 @@ export function writeSvgPreviews(outDir, perStage, deduped, opts, superlatives) 
   } catch { /* ignore */ }
 
   const results = {};
-  const map = renderMapSvg(perStage, deduped, opts, superlatives, places);
-  if (map) {
-    writeFileSync(join(outDir, 'preview-map.svg'), map);
+  const mapLight = renderMapSvg(perStage, deduped, opts, superlatives, places, false);
+  const mapDark = renderMapSvg(perStage, deduped, opts, superlatives, places, true);
+  if (mapLight) {
+    writeFileSync(join(outDir, 'preview-map.svg'), mapLight);
+    writeFileSync(join(outDir, 'preview-map-dark.svg'), mapDark);
     results.map = 'preview-map.svg';
   }
-  const ele = renderElevationSvg(deduped);
-  if (ele) {
-    writeFileSync(join(outDir, 'preview-elevation.svg'), ele);
+  const eleLight = renderElevationSvg(deduped, false);
+  const eleDark = renderElevationSvg(deduped, true);
+  if (eleLight) {
+    writeFileSync(join(outDir, 'preview-elevation.svg'), eleLight);
+    writeFileSync(join(outDir, 'preview-elevation-dark.svg'), eleDark);
     results.elevation = 'preview-elevation.svg';
   }
-  const spd = renderSpeedSvg(deduped);
-  if (spd) {
-    writeFileSync(join(outDir, 'preview-speed.svg'), spd);
+  const spdLight = renderSpeedSvg(deduped, false);
+  const spdDark = renderSpeedSvg(deduped, true);
+  if (spdLight) {
+    writeFileSync(join(outDir, 'preview-speed.svg'), spdLight);
+    writeFileSync(join(outDir, 'preview-speed-dark.svg'), spdDark);
     results.speed = 'preview-speed.svg';
   }
   return results;
