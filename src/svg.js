@@ -11,6 +11,32 @@ function esc(s) {
   return String(s).replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
 }
 
+// Pick a projection that minimises distortion for this trip's bbox.
+// Lambert conformal conic (d3.geoConicConformal) with standard parallels set
+// at 1/6 and 5/6 of the latitude span — the same logic SPCS uses — gives
+// essentially state-plane-grade fidelity inside the bbox.
+// Fall back to Mercator for huge / antimeridian-crossing trips.
+function pickProjection(bbox) {
+  const [minLon, minLat, maxLon, maxLat] = bbox;
+  const latSpan = maxLat - minLat;
+  const lonSpan = maxLon - minLon;
+
+  if (lonSpan > 40 || latSpan > 25 || minLon < -170 || maxLon > 170) {
+    return { projection: d3.geoMercator(), name: 'mercator' };
+  }
+
+  // LCC with inscribed standard parallels
+  const sp1 = minLat + latSpan / 6;
+  const sp2 = maxLat - latSpan / 6;
+  const centerLon = (minLon + maxLon) / 2;
+  const centerLat = (minLat + maxLat) / 2;
+  const projection = d3.geoConicConformal()
+    .parallels([sp1, sp2])
+    .rotate([-centerLon, 0])
+    .center([0, centerLat]);
+  return { projection, name: `lambert conformal conic · parallels ${sp1.toFixed(1)}°/${sp2.toFixed(1)}°` };
+}
+
 // ---------- theme styles ----------
 // Colors drive off CSS custom properties so the SVG flips to dark mode on its
 // own when embedded on a dark page (or when the OS theme is dark).
@@ -86,15 +112,21 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
     })),
   };
 
+  // Pick the right projection for this bbox (LCC for small/medium trips,
+  // Mercator as fallback).
+  const bounds = d3.geoBounds(trackFc);            // [[minLon,minLat],[maxLon,maxLat]]
+  const bbox = [bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1]];
+  const { projection: projBase, name: projName } = pickProjection(bbox);
+
   const provisionalInnerW = MAX_W - PAD.left - PAD.right;
   const provisionalInnerH = MAX_H - PAD.top - PAD.bottom;
 
-  const projectionProbe = d3.geoMercator()
-    .fitExtent(
-      [[PAD.left, PAD.top], [PAD.left + provisionalInnerW, PAD.top + provisionalInnerH]],
-      trackFc,
-    );
-  const probePath = d3.geoPath(projectionProbe);
+  // Probe rendered size at the provisional extent, then tighten W/H to hug it.
+  projBase.fitExtent(
+    [[PAD.left, PAD.top], [PAD.left + provisionalInnerW, PAD.top + provisionalInnerH]],
+    trackFc,
+  );
+  const probePath = d3.geoPath(projBase);
   const [[bx0, by0], [bx1, by1]] = probePath.bounds(trackFc);
   const renderedW = bx1 - bx0;
   const renderedH = by1 - by0;
@@ -106,8 +138,8 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
   const frameX1 = PAD.left + renderedW;
   const frameY1 = PAD.top + renderedH;
 
-  const projection = d3.geoMercator()
-    .fitExtent([[frameX0, frameY0], [frameX1, frameY1]], trackFc);
+  // Re-fit at the final dimensions.
+  const projection = projBase.fitExtent([[frameX0, frameY0], [frameX1, frameY1]], trackFc);
   const path = d3.geoPath(projection);
   const trackD = path(trackFc);
 
@@ -206,7 +238,7 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
     <line class="mg-axis" x1="${(scaleX + scalePx).toFixed(1)}" y1="${(scaleY - 4)}" x2="${(scaleX + scalePx).toFixed(1)}" y2="${(scaleY + 4)}" stroke-width="1.5"/>
     <text class="mg-label" x="${(scaleX + scalePx / 2).toFixed(1)}" y="${(scaleY - 7)}" text-anchor="middle" font-size="10">${niceKm} km</text>`;
 
-  const footer = `<text class="mg-muted-label" x="${frameX1}" y="${(H - 18)}" text-anchor="end" font-size="9">moto-gpx · mercator</text>`;
+  const footer = `<text class="mg-muted-label" x="${frameX1}" y="${(H - 18)}" text-anchor="end" font-size="9">moto-gpx · ${esc(projName)}</text>`;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
