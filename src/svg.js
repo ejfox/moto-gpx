@@ -15,7 +15,9 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
   if (!deduped.length || !perStage.length) return null;
 
   const MAX_W = 900;
-  const MIN_W = 500;
+  // Title is ~240px wide at 16px Helvetica; ensure the viewport is wide enough
+  // for the header + scale bar + attribution without clipping.
+  const MIN_W = 340;
   const MAX_H = 700;
   const PAD = { top: 60, right: 30, bottom: 50, left: 30 };
 
