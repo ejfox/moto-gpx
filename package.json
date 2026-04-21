@@ -1,0 +1,23 @@
+{
+  "name": "moto-gpx",
+  "version": "0.2.0",
+  "description": "Dump a folder of GPX tracks, get map-ready GeoJSON split by day/hour/stage — plus optional photo/video points from exiftool.",
+  "type": "module",
+  "bin": {
+    "moto-gpx": "./moto-gpx.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["gpx", "geojson", "motorcycle", "mapping", "d3", "qgis", "exif", "gps"],
+  "author": "EJ Fox <ejfox@ejfox.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ejfox/moto-gpx.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ejfox/moto-gpx/issues"
+  },
+  "homepage": "https://github.com/ejfox/moto-gpx#readme"
+}

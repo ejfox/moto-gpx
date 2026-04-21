@@ -1,0 +1,9 @@
+node_modules/
+moto-out/
+out/
+*.log
+.DS_Store
+.env
+# common local test dumps
+fixtures/
+sample/
