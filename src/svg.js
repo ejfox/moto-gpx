@@ -92,6 +92,9 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places, dark
   const MIN_W = 340;
   const MAX_H = 700;
   const PAD = { top: 60, right: 30, bottom: 50, left: 30 };
+  // Breathing room between the track and the frame so endpoints and labels
+  // don't get cropped or pressed against the border.
+  const INSET = 24;
 
   const SIMPLIFY_M = 3;
   const trackFc = {
@@ -112,12 +115,12 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places, dark
   const bbox = [bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1]];
   const { projection: projBase, name: projName } = pickProjection(bbox);
 
-  const provisionalInnerW = MAX_W - PAD.left - PAD.right;
-  const provisionalInnerH = MAX_H - PAD.top - PAD.bottom;
+  const provisionalInnerW = MAX_W - PAD.left - PAD.right - 2 * INSET;
+  const provisionalInnerH = MAX_H - PAD.top - PAD.bottom - 2 * INSET;
 
-  // Probe rendered size at the provisional extent, then tighten W/H to hug it.
+  // Probe at the provisional extent so we know the track's rendered aspect.
   projBase.fitExtent(
-    [[PAD.left, PAD.top], [PAD.left + provisionalInnerW, PAD.top + provisionalInnerH]],
+    [[0, 0], [provisionalInnerW, provisionalInnerH]],
     trackFc,
   );
   const probePath = d3.geoPath(projBase);
@@ -125,15 +128,23 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places, dark
   const renderedW = bx1 - bx0;
   const renderedH = by1 - by0;
 
-  const W = Math.max(MIN_W, Math.round(renderedW + PAD.left + PAD.right));
-  const H = Math.round(renderedH + PAD.top + PAD.bottom);
+  // Frame includes INSET breathing room on all sides; SVG canvas includes PAD
+  // outside the frame for title + scale bar + attribution.
+  const frameW = renderedW + 2 * INSET;
+  const frameH = renderedH + 2 * INSET;
+  const W = Math.max(MIN_W, Math.round(frameW + PAD.left + PAD.right));
+  const H = Math.round(frameH + PAD.top + PAD.bottom);
   const frameX0 = PAD.left;
   const frameY0 = PAD.top;
-  const frameX1 = PAD.left + renderedW;
-  const frameY1 = PAD.top + renderedH;
+  const frameX1 = frameX0 + frameW;
+  const frameY1 = frameY0 + frameH;
 
-  // Re-fit at the final dimensions.
-  const projection = projBase.fitExtent([[frameX0, frameY0], [frameX1, frameY1]], trackFc);
+  // Re-fit the projection into the inset region so the track has breathing
+  // room between itself and the frame border.
+  const projection = projBase.fitExtent(
+    [[frameX0 + INSET, frameY0 + INSET], [frameX1 - INSET, frameY1 - INSET]],
+    trackFc,
+  );
   const path = d3.geoPath(projection);
   const trackD = path(trackFc);
 
