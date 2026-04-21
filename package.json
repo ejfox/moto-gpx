@@ -1,7 +1,7 @@
 {
   "name": "moto-gpx",
-  "version": "0.2.0",
-  "description": "Dump a folder of GPX tracks, get map-ready GeoJSON split by day/hour/stage — plus optional photo/video points from exiftool.",
+  "version": "0.3.0",
+  "description": "Dump a folder of GPX tracks, get QGIS-ready GeoJSON layers for multi-day motorcycle trip maps — tracks, stops, speed bins, photos, weather, OSM roads/places, state crossings, sun position, OSRM route comparison, and AWS SRTM DEM.",
   "type": "module",
   "bin": {
     "moto-gpx": "./moto-gpx.js"
