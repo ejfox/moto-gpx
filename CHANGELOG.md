@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.1] — 2026-04-21
+
+Bug fixes surfaced by testing against a real Garmin file (5689-point Hudson
+Valley loop ride, Sept 2021).
+
+### Fixed
+
+- **`max_speed_mph` false spikes from GPS jitter.** Adjacent 1s-interval GPS samples with a 50m coordinate hiccup were reporting as 100+ mph. Now computed over a 5-second sliding window so single-point jitter gets averaged across 3–5 real samples. Real sustained peaks (e.g. a brief highway pass) still register.
+- **OSRM routes on loop rides.** A 56-mile ride that starts and ends in the same driveway was routing start → end via 13 meters, producing `extra_distance_pct: 707752`. Now: when start/end are within 200m we route via the trkpt farthest from start as a waypoint. New feature properties: `is_loop: bool`, `waypoint: [lon, lat] | null`.
+- **Misleading DEM summary.** Summary previously printed `dem/ (N tiles, vrt)` even when `gdalbuildvrt` failed. Now only includes components that actually built.
+- **Empty media folders no longer produce empty `media.geojson`.** If `--media <dir>` contains no locatable files, we skip the file and print a friendly notice.
+
 ## [0.3.0] — 2026-04-21
 
 Big jump. Full "mise en place" workflow for hand-making motorcycle trip maps
