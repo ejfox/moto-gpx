@@ -20,6 +20,7 @@ import { fetchOSRMRoutes } from './src/enrich/routes.js';
 import { computeCrossings } from './src/enrich/crossings.js';
 import { attachSunPosition } from './src/enrich/sun.js';
 import { writeStarterStyles } from './src/qml.js';
+import { computeSuperlatives, printSuperlatives } from './src/superlatives.js';
 
 // -------- args --------
 const argv = process.argv.slice(2);
@@ -59,6 +60,9 @@ Enrichments (opt-in; require network):
   --enrich <list>      Comma list: weather, osm, routes, crossings, sun, all
                        e.g. --enrich weather,osm,sun
 
+Superlatives (GPS-derived fun stats, on by default):
+  --no-superlatives    Skip the post-run banner
+
 Examples:
   moto-gpx ~/trips/big-sur --media ~/trips/big-sur --out ./bs-out
   moto-gpx ./trip --dem --enrich weather,osm,sun
@@ -88,6 +92,7 @@ const opts = {
   demHillshade: true,
   demContour: 0,
   enrich: new Set(),
+  superlatives: true,
 };
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i];
@@ -115,6 +120,8 @@ for (let i = 1; i < argv.length; i++) {
   else if (a === '--dem-hillshade') opts.demHillshade = true;
   else if (a === '--no-dem-hillshade') opts.demHillshade = false;
   else if (a === '--dem-contour') opts.demContour = Number(argv[++i]);
+  else if (a === '--superlatives') opts.superlatives = true;
+  else if (a === '--no-superlatives') opts.superlatives = false;
   else if (a === '--enrich') {
     const list = argv[++i].split(',').map(s => s.trim()).filter(Boolean);
     if (list.includes('all')) {
@@ -480,6 +487,23 @@ async function main() {
     { distance_km: 0, moving_min: 0, duration_min: 0, ele_gain_m: 0, ele_loss_m: 0, max_speed_mph: 0 },
   );
 
+  const computedTotals = {
+    distance_km: +totals.distance_km.toFixed(2),
+    distance_mi: +(totals.distance_km * 0.621371).toFixed(2),
+    duration_hours: +(totals.duration_min / 60).toFixed(2),
+    moving_hours: +(totals.moving_min / 60).toFixed(2),
+    ele_gain_m: totals.ele_gain_m,
+    ele_loss_m: totals.ele_loss_m,
+    max_speed_mph: totals.max_speed_mph,
+    avg_moving_mph: totals.moving_min > 0
+      ? +((totals.distance_km * 1000 / (totals.moving_min * 60)) * 2.23694).toFixed(1)
+      : null,
+  };
+
+  const superlatives = opts.superlatives
+    ? computeSuperlatives(deduped, perStage, opts, computedTotals)
+    : null;
+
   const summary = {
     trip: opts.name,
     generated: new Date().toISOString(),
@@ -488,22 +512,12 @@ async function main() {
     total_points: deduped.length,
     stages: perStage.length,
     bbox: bboxOf(deduped),
-    totals: {
-      distance_km: +totals.distance_km.toFixed(2),
-      distance_mi: +(totals.distance_km * 0.621371).toFixed(2),
-      duration_hours: +(totals.duration_min / 60).toFixed(2),
-      moving_hours: +(totals.moving_min / 60).toFixed(2),
-      ele_gain_m: totals.ele_gain_m,
-      ele_loss_m: totals.ele_loss_m,
-      max_speed_mph: totals.max_speed_mph,
-      avg_moving_mph: totals.moving_min > 0
-        ? +((totals.distance_km * 1000 / (totals.moving_min * 60)) * 2.23694).toFixed(1)
-        : null,
-    },
+    totals: computedTotals,
     stage_breakdown: perStage.map(({ i, stats, day }) => ({ stage: i, day, ...stats })),
     media: opts.media ? mediaCounts : null,
     enrichments: Object.keys(enrichResults).length ? enrichResults : null,
     dem: demInfo,
+    superlatives,
   };
   writeFileSync(join(opts.out, 'stats.json'), JSON.stringify(summary, null, 2));
 
@@ -539,6 +553,8 @@ async function main() {
   }
   if (opts.styles) console.log(`    styles/ (.qml QGIS styles)`);
   console.log(`    stats.json`);
+
+  if (superlatives) printSuperlatives(superlatives, opts);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.4.0] — 2026-04-21
+
+Every run now ends with a "superlatives" banner — the fun facts you'd want in
+a year-in-review, printed to console and stashed in `stats.json.superlatives`.
+
+### Added
+
+- **`src/superlatives.js`** — GPS-derived fun stats computed at the end of every run:
+  - `fastest_mile` — best 1-mile split with pace and coordinates
+  - `longest_nonstop` — longest continuous moving streak (minutes + miles)
+  - `highest_point` / `lowest_point` — elevation extremes with lat/lon/time
+  - `biggest_climb` / `biggest_descent` — biggest single climb and drop with start/peak + avg grade
+  - `steepest_grade` — steepest ~200m segment
+  - `longest_straight` — longest run where cumulative heading change < 8°
+  - `total_turning_deg` / `turns_per_mile` — twistiness index
+  - `compass_extremes` — furthest N/S/E/W points with timestamps
+  - `speed_bucket_pct` — % of time in slow/moderate/fast/highway
+  - `time_of_day_pct` — morning/afternoon/evening/night distribution
+  - `performance` telemetry block: top speed (with lat/lon/time), 0-60 time, time above 60 mph, peak cornering G (v²/r via 3-point curvature), hardest braking G, biggest launch G, smoothness score 1-10
+  - `weather` superlatives (hottest/coldest/windiest stage) when `--enrich weather` ran
+  - `places_traversed` — chronological "town signs you passed" list from `places.geojson` when `--enrich osm` ran
+  - `equivalent_to` — distance in football fields, marathons, Empire State Buildings climbed, Eiffel Towers, Kilimanjaros
+- `--no-superlatives` to skip the banner/stat computation.
+
+### Fixed
+
+- Unified max-speed smoothing window between core stats (`src/gpx.js`) and telemetry (`src/superlatives.js`) — both now use a 5-second sliding window, so the summary's "max X mph" matches `superlatives.performance.top_speed`.
+
 ## [0.3.1] — 2026-04-21
 
 Bug fixes surfaced by testing against a real Garmin file (5689-point Hudson

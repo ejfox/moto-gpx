@@ -212,6 +212,11 @@ Every `.geojson` also gets a sibling `.qml` — drag onto QGIS and the
 symbology auto-loads. CRS is plain **WGS 84 (EPSG:4326)** throughout, no
 reprojection needed.
 
+Every run also ends with a **superlatives** banner — fastest mile, biggest
+climb, peak cornering G, time above 60 mph, towns you passed, how many
+Empire State Buildings worth of climbing. Also stashed in
+`stats.json.superlatives` for later. Pass `--no-superlatives` to skip.
+
 See [docs/LAYERS.md](./docs/LAYERS.md) for the exact property schema of every
 layer and what each field means.
 
