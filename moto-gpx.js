@@ -457,7 +457,7 @@ async function main() {
   }
 
   // -------- media.geojson --------
-  if (opts.media) {
+  if (opts.media && mediaFeatures.length > 0) {
     writeFc(join(opts.out, 'media.geojson'), mediaFeatures, { trip: opts.name, count: mediaFeatures.length });
   }
 
@@ -524,12 +524,19 @@ async function main() {
   if (speedbinCount) console.log(`    speedbins.geojson (${speedbinCount})`);
   if (markerCount) console.log(`    markers.geojson (${markerCount})`);
   if (mergedDays) console.log(`    days-merged/ (${mergedDays})`);
-  if (opts.media) console.log(`    media.geojson (${mediaFeatures.length} pts: ${mediaCounts.photos} photo, ${mediaCounts.videos} video)`);
+  if (opts.media && mediaFeatures.length > 0) console.log(`    media.geojson (${mediaFeatures.length} pts: ${mediaCounts.photos} photo, ${mediaCounts.videos} video)`);
+  else if (opts.media) console.log(`    (no locatable media in ${opts.media})`);
   if (enrichResults.crossings) console.log(`    crossings.geojson (${enrichResults.crossings})`);
   if (enrichResults.osm) console.log(`    osm layers (${Object.keys(enrichResults.osm).join(', ')})`);
   if (enrichResults.routes) console.log(`    optimal_routes.geojson (${enrichResults.routes.count ?? '?'} stages routed)`);
   if (enrichResults.weather) console.log(`    weather_timeline.json (${enrichResults.weather.stages ?? '?'} stages)`);
-  if (demInfo) console.log(`    dem/ (${demInfo.tiles ?? '?'} tiles, vrt${demInfo.hillshade ? ' + hillshade' : ''}${demInfo.contours ? ' + contours' : ''})`);
+  if (demInfo) {
+    const parts = [`${demInfo.tiles ?? '?'} tiles`];
+    if (demInfo.vrt) parts.push('vrt');
+    if (demInfo.hillshade) parts.push('hillshade');
+    if (demInfo.contours) parts.push('contours');
+    console.log(`    dem/ (${parts.join(', ')})`);
+  }
   if (opts.styles) console.log(`    styles/ (.qml QGIS styles)`);
   console.log(`    stats.json`);
 }

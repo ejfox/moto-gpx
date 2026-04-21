@@ -135,10 +135,30 @@ export function segmentStats(points) {
       const dt = (t1 - t0) / 1000;
       if (dt > 0) {
         const speed = d / dt;
-        if (speed < 134 && speed > maxSpeed) maxSpeed = speed;
         if (speed > 0.5) movingSec += dt;
       }
     }
+  }
+
+  // Max speed computed over a 5-second sliding window so a single GPS jitter
+  // (e.g. 50m hop between adjacent 1s samples → 112 mph phantom) doesn't
+  // dominate. Still sanity-clamped to <300 mph.
+  const SPEED_WINDOW_MS = 5000;
+  for (let i = 0; i < points.length; i++) {
+    if (points[i].time == null) continue;
+    let j = i + 1;
+    let winDist = 0;
+    while (j < points.length) {
+      if (points[j].time == null) { j++; continue; }
+      winDist += haversine(points[j - 1], points[j]);
+      if ((points[j].time - points[i].time) >= SPEED_WINDOW_MS) break;
+      j++;
+    }
+    if (j >= points.length) break;
+    const dt = (points[j].time - points[i].time) / 1000;
+    if (dt <= 0) continue;
+    const speed = winDist / dt;
+    if (speed < 134 && speed > maxSpeed) maxSpeed = speed;
   }
   let gain = 0, loss = 0;
   let prevEle = null;
