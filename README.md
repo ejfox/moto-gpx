@@ -1,199 +1,245 @@
 # moto-gpx
 
-Dump a folder of GPX tracks (phone, Garmin, whatever), get back a stack of
-layered GeoJSON ready to drag into QGIS for hand-cartography — tracks, rest
-stops, speed-binned segments, per-day lines, photos, weather, OSM roads and
-places, state crossings, sun position, an OSRM "what the car would've done"
-comparison, and SRTM elevation data. All you do in QGIS is style.
-
-Built for making dope maps of multi-day motorcycle trips.
+**A zero-dependency Node.js CLI that turns a folder of GPX files into a stack
+of map-ready GeoJSON layers for hand-making dope QGIS maps of multi-day
+motorcycle trips.**
 
 ```
 moto-gpx ~/trips/big-sur --media ~/trips/big-sur --enrich all --dem --out ./out
 ```
 
-```
-moto-gpx: big-sur
-  found 9 gpx files in ~/trips/big-sur
-  merged → 14,328 points (22 dupes removed)
-  split on 20min gaps → 17 stages, 14 kept (min 10 pts)
-  exiftool scan: ~/trips/big-sur
-    146 media files
-    geotagged: 92 direct · 48 interpolated · 6 unlocated
-  ☼ sun position on 146 media points
-  ☁ weather: open-meteo per stage
-  ◉ osm: overpass for roads, places, POIs
-  ↣ routes: osrm suggested vs actual
-  ⊢ state crossings
-  ◬ DEM: AWS Terrain Tiles, buffer 20%
+Does all the data prep for you — tracks, rest stops, speed-binned segments,
+photo markers, weather per stage, OSM road names, state crossings, SRTM
+hillshade — so when you open QGIS, everything you need is already a layer
+with pre-loaded symbology. You just style.
 
-  big-sur
-  612.8 mi / 986.2 km
-  moving 14h23  /  wall 3d02
-  max 94.1 mph  · avg moving 42.6 mph
-  +18,240m / -17,930m
+---
+
+## Table of contents
+
+- [Quick start](#quick-start)
+- [Install](#install)
+- [What it does](#what-it-does)
+- [CLI reference](#cli-reference)
+- [Output structure](#output-structure)
+- [Docs](#docs)
+- [Design](#design)
+- [License](#license)
+
+---
+
+## Quick start
+
+```sh
+# Install (one-time)
+git clone https://github.com/ejfox/moto-gpx.git
+cd moto-gpx && npm link
+
+# Run on a trip folder
+moto-gpx ~/trips/bigsur --media ~/trips/bigsur --out ./bigsur-out
+
+# Everything on, DEM included
+moto-gpx ~/trips/bigsur --media ~/trips/bigsur --enrich all --dem --dem-contour 100 --out ./bigsur-out
 ```
+
+Then open QGIS and drag `bigsur-out/` onto the canvas. Styles auto-load from
+the sibling `.qml` files. See [docs/QGIS.md](./docs/QGIS.md) for the full
+hand-cartography workflow.
+
+---
 
 ## Install
 
-Node 18+ required. Optional externals: `exiftool` (media ingest), `gdal` (DEM).
+Needs **Node 18+**. Nothing to npm-install — the tool is zero-runtime-dep.
 
 ```sh
 git clone https://github.com/ejfox/moto-gpx.git
 cd moto-gpx
-npm link                         # puts `moto-gpx` on your PATH
-brew install exiftool gdal       # optional, for --media and --dem
+npm link
 ```
 
-## What gets written
+Optional external binaries, each only used when you opt in to its feature:
 
-```
-out/
-├── all.geojson              every stage as a LineString (summary layer)
-├── stages/                  one LineString per stage (break-delimited)
-├── days/                    one file per day, all stages within
-├── days-merged/             ONE LineString per day (unbroken, for overviews)
-├── hours/                   per-hour slices
-├── stops.geojson            Point per rest stop / overnight (labeled by kind)
-├── speedbins.geojson        LineString per ~60s chunk, color by speed bucket
-├── markers.geojson          stage/day start & end Points, pre-labeled
-├── media.geojson            photos & videos placed directly, interpolated, or GPS-only
-├── crossings.geojson        state/province Point at each transition
-├── places.geojson           towns crossed, labeled by name       (--enrich osm)
-├── roads.geojson            OSM ways you rode, by highway class  (--enrich osm)
-├── pois.geojson             viewpoints, peaks, fuel, historic    (--enrich osm)
-├── optimal_routes.geojson   what OSRM would've routed you         (--enrich routes)
-├── weather_timeline.json    hourly weather per stage region       (--enrich weather)
-├── dem/
-│   ├── tiles/               cached SRTM .hgt files (reused across runs)
-│   ├── trip.vrt             seamless virtual raster — drag into QGIS
-│   ├── trip-hillshade.tif   pre-rendered shaded relief
-│   └── trip-contours.geojson  (optional) elevation lines as vector
-├── styles/                  QGIS .qml style templates for each layer
-└── stats.json               trip totals, per-stage breakdown, per-stage enrichments
-```
+| Binary | When you need it | Install |
+|---|---|---|
+| `exiftool` | `--media` flag | `brew install exiftool` |
+| GDAL (`gdalbuildvrt`, `gdaldem`, `gdal_contour`) | `--dem` flag | `brew install gdal` |
 
-Every `.geojson` also gets a sibling `.qml` — drag onto QGIS and the symbology
-auto-loads. CRS is plain WGS 84 (EPSG:4326), no reprojection.
+See [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md) if GDAL gives you a
+`libpoppler` error (common Homebrew issue).
 
-## Options
+---
 
-### Core
+## What it does
+
+Given a folder of `.gpx` files (with optional sibling photos/videos):
+
+1. **Walks** the folder recursively for `.gpx` files
+2. **Parses** every `<trkpt>`, merges them into one sorted timeline
+3. **Dedupes** identical `(time, lat, lon)` triples — you can have overlapping logs from phone + Garmin and it Just Works
+4. **Splits into stages** wherever there's a time gap bigger than `--break` minutes (default 20) — this is how morning / lunch / afternoon become separate features, no dotted lines across rest stops
+5. **Buckets** into days, hours, and per-stage views
+6. **Emits QGIS-prep layers:** stops (labeled by duration class), speed-binned line chunks, stage + day start/end markers with pre-written labels, one-line-per-day merged view
+7. **Optionally ingests** photos/videos via `exiftool`, placing each on the map by GPS when present or interpolated from the track by timestamp when not
+8. **Optionally enriches** with weather, OSM road/place/POI data, state-border crossings, sun position per photo, and OSRM "what you should've done" route comparisons
+9. **Optionally fetches** SRTM elevation tiles from AWS and stitches them into a seamless QGIS-ready VRT + hillshade + contour lines
+10. **Drops QGIS `.qml` style files** next to every layer so symbology auto-loads on drag-drop
+
+Everything is opt-in except the core track layers. Nothing calls out to the
+network unless you pass `--enrich`.
+
+---
+
+## CLI reference
+
+### Core flags
 
 | Flag | Default | Meaning |
 |---|---|---|
+| `<folder>` | *required* | Folder containing `.gpx` files (recursively walked) |
 | `--out <dir>` | `./moto-out` | Output directory |
-| `--split <mode>` | `all` | `day` / `hour` / `stage` / `all` |
+| `--split <mode>` | `all` | `day` \| `hour` \| `stage` \| `all` |
 | `--break <minutes>` | `20` | Gap threshold to start a new stage |
-| `--min-points <n>` | `10` | Drop stages with fewer points |
+| `--min-points <n>` | `10` | Drop stages with fewer points (kills GPS noise) |
 | `--simplify <meters>` | `0` | Douglas-Peucker tolerance, 0 = off |
 | `--tz <offset>` | local | Hours from UTC for day/hour bucketing |
 | `--name <string>` | folder basename | Trip name, stamped into every feature |
+| `-h`, `--help` | — | Show help |
 
 ### QGIS prep layers (on by default, `--no-<name>` to skip)
 
 | Flag | What you get |
 |---|---|
-| `--stops` | Rest stops as labeled Points (rest / long-rest / overnight) |
-| `--speedbins` | Line chunks tagged `slow/moderate/fast/highway` — categorized color |
-| `--markers` | Stage + day start/end Points with pre-written labels like "Day 2 start — 09:14" |
-| `--days-merged` | ONE unbroken LineString per day |
-| `--styles` | Drop-in `.qml` style files next to every layer |
+| `--stops` | `stops.geojson` — rest-stop + overnight Points |
+| `--speedbins` | `speedbins.geojson` — line chunks tagged `slow/moderate/fast/highway` |
+| `--markers` | `markers.geojson` — stage + day start/end Points with pre-written labels |
+| `--days-merged` | `days-merged/*.geojson` — one unbroken LineString per day |
+| `--styles` | `<layer>.qml` next to each GeoJSON for auto-styling in QGIS |
 
 ### Media
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--media <dir>` | — | Ingest JPG/HEIC/MP4/MOV via exiftool |
-| `--media-tz <offset>` | same as `--tz` | For naive EXIF timestamps |
+| `--media <dir>` | off | Ingest JPG/HEIC/MP4/MOV via `exiftool` |
+| `--media-tz <offset>` | same as `--tz` | For naive EXIF timestamps without embedded offset |
 
-### DEM (needs GDAL)
+### DEM (requires GDAL)
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--dem` | off | Fetch AWS Terrain Tiles, stitch into seamless VRT |
+| `--dem` | off | Fetch AWS Terrain Tiles, stitch into seamless `trip.vrt` |
 | `--dem-buffer <pct>` | `20` | Bbox padding percent |
-| `--dem-hillshade` | on with `--dem` | Pre-render shaded relief TIFF |
+| `--dem-hillshade` | on with `--dem` | Pre-render shaded relief GeoTIFF |
+| `--no-dem-hillshade` | — | Skip the hillshade step |
 | `--dem-contour <m>` | `0` (off) | Emit contour lines every N meters as GeoJSON |
 
 ### Enrichments (opt-in, network)
 
-```sh
---enrich weather,osm,routes,crossings,sun
---enrich all
+```
+--enrich <comma-list>
 ```
 
-| Token | API | What lands |
+| Token | What lands | API |
 |---|---|---|
-| `weather` | Open-Meteo historical | `stage.weather` (temp, wind, conditions) + `weather_timeline.json` |
-| `osm` | Overpass | `roads.geojson`, `places.geojson`, `pois.geojson`, `stage.roads` |
-| `routes` | OSRM public | `optimal_routes.geojson` — "how you should've gone" per stage |
-| `crossings` | local (Natural Earth data) | `crossings.geojson` — state/province transition Points |
-| `sun` | local math | mutates `media.geojson` with altitude, azimuth, `is_golden_hour` |
+| `weather` | per-stage weather on `stage.stats` + `weather_timeline.json` | Open-Meteo historical |
+| `osm` | `roads.geojson`, `places.geojson`, `pois.geojson` + per-stage road summary | Overpass |
+| `routes` | `optimal_routes.geojson` with `extra_distance_pct` per stage | OSRM public |
+| `crossings` | `crossings.geojson` — state/province transitions | local (Natural Earth data bundled) |
+| `sun` | mutates `media.geojson` with altitude/azimuth/is_golden_hour | local math |
+| `all` | shorthand for all of the above | — |
 
-All enrichments are zero-auth. Weather, OSM, and routes retry once on rate-limit and degrade to "skip this stage" rather than abort the whole run.
+All enrichments retry once on rate-limit and degrade to "skip" on persistent
+failure — the run never aborts because one API is down.
 
-## Recipes
+### Recipes
 
 **Multi-day trip, everything on:**
-
 ```sh
 moto-gpx ~/trips/big-sur --media ~/trips/big-sur --enrich all --dem --dem-contour 100 --out ./out
 ```
 
-**Just the tracks, no network, for a quick QGIS glance:**
-
+**Just the tracks, no network — quick QGIS glance:**
 ```sh
 moto-gpx ./trip --out ./out
 ```
 
 **City riding, tighter break detection:**
-
 ```sh
 moto-gpx ./trip --break 10 --min-points 30 --enrich osm,weather
 ```
 
 **Smaller files for the web:**
-
 ```sh
 moto-gpx ./trip --simplify 2 --no-days-merged --no-hours
 ```
 
-## QGIS workflow
+**Custom timezone (e.g. logs in UTC but you want PT day boundaries):**
+```sh
+moto-gpx ./trip --tz -7
+```
 
-1. Run moto-gpx.
-2. Open QGIS, drag `out/` onto the canvas (or load layer-by-layer).
-3. Styles auto-load from the sibling `.qml` files. Rearrange layers, hand-tune colors.
-4. Drag `out/dem/trip-hillshade.tif` in as the bottom layer, lower its opacity.
-5. Drag `out/dem/trip-contours.geojson` above the hillshade if you want labeled elevations.
-6. Label `stops.geojson` by `kind`, `crossings.geojson` by `to_state`, `places.geojson` by `name`.
-7. Compose & export.
+---
 
-## Media placement strategies
+## Output structure
 
-Three fallbacks in order:
+```
+out/
+├── all.geojson              every stage as a LineString (summary layer)
+├── stats.json               trip totals + per-stage breakdown + enrichments
+├── stages/                  one LineString per stage (break-delimited)
+├── days/                    one file per day, all stages within
+├── days-merged/             ONE unbroken LineString per day (overview view)
+├── hours/                   per-hour slices (rarely needed; skip with --no-hours)
+├── stops.geojson            rest / long-rest / overnight Points at each break
+├── speedbins.geojson        ~60s LineString chunks, tagged by speed bucket
+├── markers.geojson          stage + day start/end Points, pre-labeled
+├── media.geojson            photos + videos placed on the map
+├── crossings.geojson        state/province transition Points       (--enrich crossings)
+├── places.geojson           towns along the route                  (--enrich osm)
+├── roads.geojson            OSM ways you rode, by highway class    (--enrich osm)
+├── pois.geojson             viewpoints, peaks, fuel, historic      (--enrich osm)
+├── optimal_routes.geojson   OSRM "what you should've done"         (--enrich routes)
+├── weather_timeline.json    hourly weather per stage region        (--enrich weather)
+├── dem/
+│   ├── tiles/               cached SRTM .hgt (reused across runs)  (--dem)
+│   ├── trip.vrt             seamless virtual raster — drag into QGIS
+│   ├── trip-hillshade.tif   pre-rendered shaded relief
+│   └── trip-contours.geojson  (with --dem-contour)
+└── styles/                  full QGIS .qml templates + a README
+```
 
-1. **EXIF GPS + timestamp** → placed directly, matched to the containing stage.
-2. **Timestamp only** → linearly interpolated along the track at that instant. Elevation too.
-3. **GPS only (no time)** → placed on the map, but `stage`/`day` are null.
+Every `.geojson` also gets a sibling `.qml` — drag onto QGIS and the
+symbology auto-loads. CRS is plain **WGS 84 (EPSG:4326)** throughout, no
+reprojection needed.
 
-Anything with neither is reported but not emitted.
+See [docs/LAYERS.md](./docs/LAYERS.md) for the exact property schema of every
+layer and what each field means.
 
-## Known limits
+---
 
-- Helmet cam MP4s contribute one representative point per file (QuickTime location atom).
-  Full GPMF telemetry-track merging is not yet implemented.
-- DJI `.SRT` per-frame sidecars aren't parsed yet.
-- EXIF timestamps without an embedded offset are interpreted with `--media-tz` (defaults to `--tz`).
-- OSRM public endpoint is rate-limited on huge trips; `--enrich routes` can be slow if you have 50+ stages.
-- States layer ships US / CA / MX from Natural Earth 50m. Europe / elsewhere would need an expansion to the asset.
+## Docs
+
+Deeper references in [`docs/`](./docs):
+
+| File | Contents |
+|---|---|
+| [LAYERS.md](./docs/LAYERS.md) | Every layer, every property, with example feature JSON |
+| [QGIS.md](./docs/QGIS.md) | Step-by-step workflow for hand-making a trip map |
+| [TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md) | Common issues (GDAL, exiftool, rate limits) and fixes |
+| [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | How the modules fit together; how to extend |
+| [CHANGELOG.md](./CHANGELOG.md) | Version history |
+
+---
 
 ## Design
 
-- Zero runtime dependencies. Everything is Node stdlib + `fetch`. `exiftool` and GDAL are the only external binaries, and only when you opt into the features that need them.
-- Modules under `src/` so each subsystem is independent and swappable. `src/enrich/*.js` are all opt-in and safe to skip.
-- CRS is WGS 84 throughout. Hillshade is rendered in degrees with `-s 111120` so QGIS renders it correctly without projecting.
+- **Zero runtime dependencies.** Everything is Node stdlib + global `fetch`. `exiftool` and GDAL are the only external binaries, and only when you opt in to the features that need them. No `npm install` needed to run.
+- **Modular.** Each subsystem under `src/` is independent and swappable. If you don't like the Open-Meteo wiring, swap `src/enrich/weather.js`.
+- **WGS 84 throughout.** No reprojection required on either end.
+- **Fail soft.** Network enrichments retry once and then degrade to "skip this stage." Missing GDAL degrades to "keep the raw tiles, skip the VRT." Missing exiftool is caught early with a friendly `brew install` hint.
+
+---
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE).
