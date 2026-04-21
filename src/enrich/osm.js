@@ -1,11 +1,64 @@
-// Overpass API — roads, places, POIs near the trip. Sequential (shared endpoint, rate-limited).
+/**
+ * osm.js — pull roads, place names, and POIs near the track from OpenStreetMap.
+ *
+ * Role in the pipeline: optional enrichment (--enrich osm). Writes three
+ * top-level layers (places.geojson, roads.geojson, pois.geojson) and
+ * attaches a `stats.roads` summary to each stage.
+ *
+ * Contract: fail-soft. Overpass queries retry once on 429/504 after a 5 s
+ * backoff, then skip. A failed query produces no file and no stats but
+ * doesn't throw. The three queries run sequentially — Overpass doesn't like
+ * concurrent hits from the same IP.
+ *
+ * External: public Overpass API (overpass-api.de). No auth. Community-hosted;
+ * polite usage is expected — we set User-Agent, keep queries tightly
+ * bbox-scoped, and serialize requests.
+ *
+ * Exports:
+ *   - fetchOSM(bbox, points, perStage, outDir, trip) — primary entry point.
+ */
+
+// ═══ Overpass API ═══
+//
+//   Endpoint: https://overpass-api.de/api/interpreter
+//   Community instance run by the OpenStreetMap volunteer group. Free,
+//   no API key. Alt mirrors exist (overpass.kumi.systems, overpass.osm.ch)
+//   if overpass-api.de is down — swap ENDPOINT and expect identical behavior.
+//
+//   Query language: Overpass QL. We POST a form-encoded `data=<query>` body.
+//   Every query here is bounded by the trip bbox to keep response size sane.
+//
+//   Rate limiting: the public instance enforces per-IP slot limits
+//   (~2 concurrent, 10k / day). We always serialize (no Promise.all) and
+//   set a User-Agent so we can be identified and rate-limited cleanly.
+//
+//   Status codes seen in the wild:
+//     429 Too Many Requests    — slot exhausted, retry after 5 s
+//     504 Gateway Timeout      — query too heavy; retrying usually works
+//     200 OK                   — JSON with `elements: [...]`
+//
+//   Response shape:
+//     {
+//       version: ..., generator: ..., osm3s: {...},
+//       elements: [
+//         { type: "node", id, lat, lon, tags: { ... } },
+//         { type: "way",  id, nodes: [...], geometry: [{lat,lon}, ...], tags: {...} },
+//         ...
+//       ]
+//     }
+//   We request `out geom` for ways so each way carries its full inline
+//   geometry; this avoids a second query to resolve node references.
 
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { haversine } from '../gpx.js';
 
+// ═══ constants ═══
 const ENDPOINT = 'https://overpass-api.de/api/interpreter';
 
+// ═══ HTTP helpers ═══
+// POSTs an Overpass QL query. One automatic retry (5 s backoff) on 429/504
+// and on any transport error. Returns parsed JSON or null.
 async function overpass(query) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {

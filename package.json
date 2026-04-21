@@ -1,6 +1,6 @@
 {
   "name": "moto-gpx",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Dump a folder of GPX tracks, get QGIS-ready GeoJSON layers for multi-day motorcycle trip maps — tracks, stops, speed bins, photos, weather, OSM roads/places, state crossings, sun position, OSRM route comparison, and AWS SRTM DEM.",
   "type": "module",
   "bin": {

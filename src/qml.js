@@ -1,12 +1,65 @@
-// QGIS starter styles. Drop <basename>.qml next to <basename>.geojson and QGIS
-// auto-loads the symbology on drag. Hand-tune from there.
+/**
+ * qml.js — emit QGIS .qml style files so GeoJSON layers self-style on drag-drop.
+ *
+ * Role in the pipeline: final step after geometry/enrichment. Writes a per-
+ * layer .qml alongside each .geojson the main pipeline produced, plus a
+ * styles/ folder containing all templates for users to Load-style later.
+ *
+ * Contract: pure filesystem writes. No network. Silently skips when a
+ * target .geojson doesn't exist (e.g. the user didn't enable that enrichment).
+ * No return value — if writing a style fails, Node throws, which is correct
+ * here because the output directory must be writable for anything else to
+ * have worked.
+ *
+ * External: QGIS 3.28+ (the .qml XML schema version is pinned in HEADER
+ * below). QGIS 3.x has been stable in its QML parser since ~3.10; the format
+ * remains forward-compatible in recent 3.x releases.
+ *
+ * Exports:
+ *   - writeStarterStyles(outDir) — write every style + attach siblings.
+ */
+
+// ═══ QGIS auto-load convention ═══
+//
+// When QGIS loads a vector file (drag-drop, add-layer, etc.) it looks for a
+// sibling file with the same basename and the extension `.qml`. If found,
+// it auto-applies the symbology, labeling, etc. described inside. This is
+// the magic that makes `all.geojson` render with the right colors without
+// the user having to touch Properties > Style > Load Style.
+//
+// The .qml format is QGIS's native XML serialization of a style. Top-level
+// schema:
+//   <qgis styleCategories="...">         // which categories this file covers
+//     <renderer-v2 type="...">           // the actual symbology
+//       <categories>...</categories>     // (categorized only) value→symbol map
+//       <symbols>...</symbols>           // one <symbol> per category
+//       <source-symbol>...</source-symbol>
+//     </renderer-v2>
+//     <labeling type="simple">...</labeling>  // optional text labels
+//   </qgis>
+//
+// Renderer types we use:
+//   singleSymbol     — all features share one symbol
+//   categorizedSymbol— split by a property value, one symbol per bucket
+//
+// Symbol types:
+//   line             — SimpleLine layer (color, width, cap/join)
+//   marker           — SimpleMarker layer (shape, size, fill, stroke)
+//
+// The `version="3.28-moto-gpx"` attribute in HEADER is informational — QGIS
+// reads it but accepts any reasonable value and falls back to the current
+// schema. We pin 3.28 as the minimum tested QGIS version (LTS line, 2022+).
 
 import { mkdirSync, writeFileSync, existsSync, readdirSync, copyFileSync } from 'node:fs';
 import { join, basename, extname } from 'node:path';
 
+// ═══ constants ═══
 const HEADER = `<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
 <qgis styleCategories="Symbology|Labeling" version="3.28-moto-gpx">`;
 
+// ═══ symbol primitives ═══
+// Colors are QGIS's standard "r,g,b,a" string (each 0-255). Widths/sizes in
+// millimeters so they're print-scale-independent (MM unit).
 function lineSymbol(name, color, widthMM = 0.8) {
   return `<symbol alpha="1" type="line" name="${name}" clip_to_extent="1">
     <layer class="SimpleLine" locked="0" pass="0">
@@ -33,6 +86,10 @@ function markerSymbol(name, color, sizeMM = 3, shape = 'circle', strokeColor = '
   </symbol>`;
 }
 
+// ═══ renderers ═══
+// Categorized renderers split features by `attr`'s value. `cats` is an array
+// of {value, label, color, width|size, shape?} — one bucket each. A default
+// "source-symbol" (gray) covers any unmatched value.
 function categorizedLine(attr, cats) {
   return `<renderer-v2 type="categorizedSymbol" attr="${attr}" symbollevels="0">
     <categories>
@@ -69,6 +126,10 @@ function singleSymbolMarker(color, sizeMM = 3, shape = 'circle') {
   </renderer-v2>`;
 }
 
+// ═══ labeling ═══
+// `expression` is usually just a field name; `isExpression=0` tells QGIS to
+// treat it as a literal column rather than a computed expression. Labels get
+// a white halo ("text-buffer") so they're readable over any basemap.
 function labeling(expression) {
   return `<labeling type="simple">
     <settings calloutType="simple">
@@ -92,8 +153,10 @@ function qml(inner, label) {
 </qgis>`;
 }
 
-// -------- style definitions per layer --------
-
+// ═══ style definitions per layer ═══
+// One entry per layer the pipeline can produce. Keys match the geojson
+// basename (or subdir name for per-stage layers). If a new output layer is
+// added to the pipeline, register a style for it here.
 function stylesByLayer() {
   return {
     // speedbins: slow→highway, yellow→deep red
@@ -164,10 +227,13 @@ function stylesByLayer() {
   };
 }
 
+// ═══ filesystem helpers ═══
 function writeIf(path, content) {
   writeFileSync(path, content);
 }
 
+// Drop a .qml next to <geojsonBase>.geojson only if that geojson exists —
+// i.e. the user actually produced that layer. Avoids orphan .qml files.
 function maybeAttach(template, outDir, geojsonBase) {
   const gj = join(outDir, `${geojsonBase}.geojson`);
   if (!existsSync(gj)) return false;
@@ -175,6 +241,9 @@ function maybeAttach(template, outDir, geojsonBase) {
   return true;
 }
 
+// Per-stage / per-day layers live in subdirectories with one .geojson per
+// stage. Write the same template alongside each so QGIS styles every file
+// identically on drag-drop.
 function distributeToDir(template, outDir, subdir) {
   const d = join(outDir, subdir);
   if (!existsSync(d)) return 0;
@@ -188,6 +257,26 @@ function distributeToDir(template, outDir, subdir) {
   return n;
 }
 
+// ═══ public API ═══
+
+/**
+ * Write every starter .qml into `outDir` (and its stage subdirectories) so
+ * QGIS applies symbology automatically when the user drags the GeoJSONs in.
+ *
+ * Effects:
+ *   - writes `<outDir>/styles/*.qml` — full catalog for later Load-style.
+ *   - for each top-level pipeline layer whose .geojson exists, drops a
+ *     sibling `.qml` next to it.
+ *   - distributes per-stage style into each .geojson under
+ *     stages/, days/, hours/, days-merged/.
+ *   - writes a short README.txt inside styles/ explaining the convention.
+ *
+ * Idempotent: existing .qml files are overwritten with the current defaults.
+ * Callers who hand-tuned a style should save it outside of outDir.
+ *
+ * @param {string} outDir  absolute path to the pipeline's output directory
+ * @returns {void}
+ */
 export function writeStarterStyles(outDir) {
   const tpl = stylesByLayer();
   const stylesDir = join(outDir, 'styles');

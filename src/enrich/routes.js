@@ -1,4 +1,30 @@
-// OSRM public endpoint — suggested driving route vs. actual track per stage.
+/**
+ * routes.js — compare each stage's actual track to OSRM's "shortest driving
+ * route" between the same endpoints.
+ *
+ * Role in the pipeline: opt-in enrichment (`--enrich routes`). For each stage,
+ * sends the start and end coordinates to OSRM's free public endpoint and
+ * retrieves a GeoJSON LineString of the suggested drive. Writes
+ * `optimal_routes.geojson` and annotates each feature with
+ * `extra_distance_pct` (positive = the rider took a longer/more scenic path;
+ * negative = OSRM thinks there's a shorter route than what was ridden).
+ *
+ * Loop detection: if start and end are within LOOP_THRESHOLD_M (200m) of each
+ * other, OSRM's naive routing would return a ~10m "route" around the parking
+ * lot. Instead we pick the track's farthest-from-start point as a via-point
+ * and route start → waypoint → end as two legs, concatenating the geometries.
+ *
+ * External API: https://router.project-osrm.org/route/v1/driving/{lon,lat};{lon,lat}
+ *   Free public endpoint, no auth. Fair-use only.
+ *   Rate limits: unpublished but generous for single-trip use.
+ *   On 429/504: backoff 3s, retry once, then skip that stage.
+ *
+ * Contract: fail-soft. Each stage is independent — one OSRM failure only
+ * drops that stage's optimal_routes feature, never aborts the run.
+ *
+ * Exports:
+ *   fetchOSRMRoutes(perStage, outDir, trip) → { count: Number of stages routed }
+ */
 
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';

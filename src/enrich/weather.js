@@ -1,11 +1,60 @@
-// Open-Meteo historical archive. Free, no auth. One call per (lat≈1km, lon≈1km, date) cell.
+/**
+ * weather.js — attach historical hourly weather to each stage via Open-Meteo.
+ *
+ * Role in the pipeline: optional enrichment (--enrich weather). Mutates each
+ * perStage entry in place (adds `stats.weather`) and writes a separate
+ * `weather_timeline.json` with full hourly traces for downstream charts.
+ *
+ * Contract: fail-soft. One retry on 429/network error, then skip that cell.
+ * Stages whose cell failed simply won't have a `.weather` stat — the rest
+ * of the pipeline never throws because of missing weather data.
+ *
+ * External: Open-Meteo Historical Archive API.
+ *
+ * Exports:
+ *   - fetchWeatherForStages(perStage, outDir) — primary entry point.
+ */
+
+// ═══ Open-Meteo historical archive API ═══
+//
+//   https://archive-api.open-meteo.com/v1/archive
+//   Free, no auth, no API key. Public SaaS, CC-BY attribution.
+//   Hourly data from 1940-01-01 through roughly T-5 days (refreshed daily
+//   from ERA5 reanalysis).
+//   Rate limit (as of writing): ~10,000 req/day per IP; we burn O(cells) per
+//   trip where a cell is (lat@0.01°, lon@0.01°, date) — i.e. ~1 km × 1 km
+//   grid × days. A week-long trip is << 100 cells. On 429 we back off 2 s
+//   and retry once; further 429s are logged and the cell is skipped.
+//
+// Response shape (abbreviated):
+//   {
+//     "hourly": {
+//       "time": ["2024-06-01T00:00", ...],          // ISO-8601, no TZ, UTC
+//       "temperature_2m":       [number|null, ...],
+//       "relative_humidity_2m": [number|null, ...],
+//       "precipitation":        [number|null, ...],  // mm
+//       "weather_code":         [number|null, ...],  // WMO 4677
+//       "wind_speed_10m":       [number|null, ...],
+//       "wind_direction_10m":   [number|null, ...],  // 0=N, 90=E, ...
+//       "pressure_msl":         [number|null, ...],  // hPa / mb
+//     }
+//   }
+//   All arrays are parallel to `hourly.time` and may contain nulls when the
+//   reanalysis has gaps.
+//
+//   We request `timezone=GMT` so timestamps are UTC and can be matched by
+//   substring against our own ISO timestamps.
 
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+// ═══ constants ═══
 const ENDPOINT = 'https://archive-api.open-meteo.com/v1/archive';
 const HOURLY = 'temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,wind_direction_10m,pressure_msl';
 
+// ═══ WMO 4677 weather-code mapping ═══
+// Open-Meteo's `weather_code` is the WMO present-weather code. Buckets here
+// follow the documented Open-Meteo mapping (abridged for legibility).
 function wmoConditions(code) {
   if (code == null) return null;
   if (code === 0) return 'clear';
@@ -18,6 +67,9 @@ function wmoConditions(code) {
   return 'unknown';
 }
 
+// ═══ HTTP helpers ═══
+// One cell = (lat, lon, date). Retries once on 429 with a 2 s backoff,
+// then once on network error. Returns the parsed JSON or null.
 async function fetchCell(lat, lon, date) {
   const url = `${ENDPOINT}?latitude=${lat}&longitude=${lon}&start_date=${date}&end_date=${date}&hourly=${HOURLY}&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=GMT`;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -41,6 +93,8 @@ async function fetchCell(lat, lon, date) {
   return null;
 }
 
+// Cooperative worker pool — up to `limit` jobs in flight. Each job is a
+// thunk (`() => Promise`). Preserves result order to match jobs array order.
 async function runWithConcurrency(jobs, limit) {
   const results = new Array(jobs.length);
   let idx = 0;
@@ -55,6 +109,33 @@ async function runWithConcurrency(jobs, limit) {
   return results;
 }
 
+// ═══ public API ═══
+
+/**
+ * Fetch hourly weather for every stage's midpoint (lat, lon, date) cell and
+ * attach to each stage's stats.
+ *
+ * Mutates: each `perStage[i].stats.weather` is assigned the nearest-hour
+ * snapshot for the stage's temporal midpoint. Stages whose cell fetch
+ * failed are left without `.weather`.
+ *
+ * Writes: `<outDir>/weather_timeline.json` — keyed by "lat|lon|date", each
+ * value is `{ lat, lon, date, hourly: <full Open-Meteo response> }`. Handy
+ * for side-panel charts that want the full day, not just the midpoint.
+ *
+ * Cell grouping: coordinates are rounded to 0.01° (~1 km) and grouped with
+ * the date so stages that pass through the same area on the same day share
+ * one API call.
+ *
+ * Fail-soft: on network error, 429 after retry, or 5xx, the affected cell
+ * silently has `data: null` and its stages get no weather attached. The
+ * function never throws — the pipeline continues.
+ *
+ * @param {Array<{pts: Array<{lat:number,lon:number,time:number}>, stats:{start_iso?:string,end_iso?:string}}>} perStage
+ *   stages from the main pipeline; mutated in place.
+ * @param {string} outDir  absolute path to the pipeline's output directory
+ * @returns {Promise<{stages:number, cells:number, timeline_path:string}>}
+ */
 export async function fetchWeatherForStages(perStage, outDir) {
   const cellKey = (lat, lon, date) => `${lat.toFixed(2)}|${lon.toFixed(2)}|${date}`;
   const cells = new Map();
@@ -75,6 +156,8 @@ export async function fetchWeatherForStages(perStage, outDir) {
     stageAssign.push({ key, midT });
   }
 
+  // Conservative concurrency: 3 parallel requests stays comfortably under
+  // Open-Meteo's per-IP rate limit even for long trips.
   const keys = [...cells.keys()];
   const jobs = keys.map(k => async () => {
     const c = cells.get(k);
@@ -89,6 +172,9 @@ export async function fetchWeatherForStages(perStage, outDir) {
     const cell = cells.get(assign.key);
     if (!cell || !cell.data || !cell.data.hourly || !cell.data.hourly.time) continue;
     const hourly = cell.data.hourly;
+    // Match on the "YYYY-MM-DDTHH" prefix; both sides are UTC because we
+    // asked for `timezone=GMT`. Fall back to hour 0 of that day if not
+    // found (shouldn't happen for same-day stages).
     const targetHour = new Date(assign.midT).toISOString().slice(0, 13);
     let hit = -1;
     for (let h = 0; h < hourly.time.length; h++) {

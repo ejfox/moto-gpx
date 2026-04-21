@@ -1,10 +1,30 @@
-// Mastodon timeline → map annotations. Fetches public toots from a handle,
-// filters to the trip's time window, interpolates each post's position along
-// the track using its timestamp, emits toots.geojson.
-//
-// No auth required for public accounts — Mastodon's account/statuses API is
-// open. Rate limits are ~300 req / 5 min unauthenticated, well within budget
-// for a single trip.
+/**
+ * mastodon.js — tie a user's public toots to GPS positions on their ride.
+ *
+ * Role in the pipeline: opt-in enrichment (`--mastodon @user@instance.social`,
+ * or via MOTO_GPX_MASTODON env var). Fetches the user's public timeline,
+ * filters to the trip's time window ±1h, interpolates each toot's position
+ * along the track using its `created_at` timestamp, writes `toots.geojson`.
+ * Downstream: shown as numbered circles on preview-map.svg, listed in the
+ * superlatives banner as "posted during the ride".
+ *
+ * Contract: fail-soft. Bad handle → null. API 5xx / network failure → null.
+ * The main run continues either way — the tool doesn't need social data to
+ * produce its core output.
+ *
+ * External API: https://{instance}/api/v1/accounts/…
+ *   Mastodon's public REST API. No auth required for public statuses.
+ *   Rate limit: ~300 req/5min unauthenticated per instance.
+ *   Response schema: https://docs.joinmastodon.org/entities/Status/
+ *
+ * Pagination: walks backward 25 pages × 40 statuses = 1000 max. For a ride
+ * you took today, your toots are all on page 1. For older trips, accounts
+ * with <~3 toots/day stay reachable for ~1 year back.
+ *
+ * Exports:
+ *   fetchMastodonPosts(handle, perStage, deduped, outDir, trip)
+ *     → { count, account, scanned, features } | null
+ */
 
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';

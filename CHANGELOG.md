@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0] — 2026-04-21
+
+Built-for-decades pass. Every module under `src/` now has:
+
+- A module-level JSDoc contract header describing its role in the pipeline, its invariants, its external dependencies, and a roster of exports.
+- `@typedef` declarations for the recurring data shapes (`Trkpt`, `Stage`, `MediaItem`, `BBox`) so the JSDoc types compose cleanly across files.
+- Section banners (`═══ constants ═══`, `═══ private helpers ═══`, `═══ public API ═══`) to make each file scannable at a glance.
+- Named constants for every magic threshold — with a comment explaining the "why" (e.g. `MAX_PLAUSIBLE_SPEED_MPS = 134`, `STRAIGHT_BEARING_TOL_DEG = 8`, `OVERNIGHT_MS = 6 hours`), so a future reader never wonders "why this exact number?"
+- JSDoc on every exported function: summary, longer context for non-trivial functions, params, returns, and an example where useful.
+- Algorithm-level comments on the trickier bits (fastest-mile two-pointer sliding window, biggest-climb max-minus-running-min, lateral-G from 3-point curvature, speed-window smoothing, etc.) explaining the math and the reason for each choice.
+- For HTTP-based enrichments (weather / osm / routes / mastodon), an inline comment at the top of each file documenting the exact external API contract we depend on — so if that API breaks or moves in year 7, the future maintainer knows exactly what we expected.
+
+### Added (features, not just docs)
+
+- `--mastodon @user@instance.social` flag and `MOTO_GPX_MASTODON` environment variable — writes `toots.geojson` with each public toot placed at the interpolated GPS position you were at when you posted. Shows up as numbered circles on the preview map and as a chronological list in the superlatives banner.
+
 ## [0.4.1] — 2026-04-21
 
 ### Added

@@ -1,3 +1,23 @@
+/**
+ * sun.js — annotate media features with solar altitude / azimuth at the
+ * exact time and place each photo / video was taken.
+ *
+ * Role in the pipeline: opt-in enrichment (`--enrich sun`). Mutates each Point
+ * Feature in `media.geojson` in place by adding: `sun_altitude_deg`,
+ * `sun_azimuth_deg`, `is_daylight` (altitude > 0), `is_golden_hour` (altitude
+ * 0–6°), `is_blue_hour` (altitude -6–0°). Useful for filtering photos by
+ * "golden hour" or coloring them by sun position on a gallery map.
+ *
+ * Contract: pure. No I/O, no network. Mutates the passed-in feature array.
+ *
+ * External dependencies: none. The solar position formulas are inlined from
+ * the NOAA low-precision algorithm (https://gml.noaa.gov/grad/solcalc/) —
+ * accurate to ~0.01° from 2000–2099, which is overkill for photograph tagging.
+ *
+ * Exports:
+ *   attachSunPosition(features) — mutates in place, returns nothing
+ */
+
 const RAD = Math.PI / 180;
 const DEG = 180 / Math.PI;
 

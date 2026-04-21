@@ -1,6 +1,48 @@
 #!/usr/bin/env node
-// moto-gpx — dump a folder of GPX, get dope QGIS-ready GeoJSON.
-// Zero runtime deps. Node 18+. Optional: exiftool (for --media), GDAL (for --dem).
+/**
+ * moto-gpx.js — CLI entry point and pipeline orchestrator.
+ *
+ * Role: parses command-line flags, walks the input folder for .gpx files,
+ * sequences every pipeline stage in dependency order (parse → sort → dedupe
+ * → split → stats → layers → media → enrichments → DEM → superlatives →
+ * SVG previews → stats.json), and prints a human-readable summary.
+ *
+ * This file does very little "real" work — it's thin glue over the modules
+ * in `src/`. Each module owns its domain logic and failure handling; the
+ * orchestrator just wires them together.
+ *
+ * Module dependency layer order (each layer only reads from earlier ones):
+ *   1. src/gpx.js         — parsing, geo math, stats     (pure, no I/O)
+ *   2. src/media.js       — exiftool ingestion           (external binary)
+ *   3. src/layers.js      — QGIS-prep layer producers    (pure)
+ *   4. src/enrich/*.js    — weather/osm/routes/…         (fail-soft network + local)
+ *   5. src/dem.js         — AWS Terrain Tiles + GDAL     (external binary)
+ *   6. src/superlatives.js — fun stats                   (pure + reads enrich side-cars)
+ *   7. src/qml.js         — QGIS style files             (pure writes)
+ *   8. src/svg.js         — SVG previews (d3)            (pure writes)
+ *
+ * Flag-to-module mapping:
+ *   --media <dir>        → src/media.js
+ *   --stops/--speedbins/--markers/--days-merged → src/layers.js
+ *   --enrich weather     → src/enrich/weather.js
+ *   --enrich osm         → src/enrich/osm.js
+ *   --enrich routes      → src/enrich/routes.js
+ *   --enrich crossings   → src/enrich/crossings.js
+ *   --enrich sun         → src/enrich/sun.js
+ *   --mastodon <handle>  → src/enrich/mastodon.js
+ *   --dem                → src/dem.js
+ *   --styles             → src/qml.js
+ *   --svg                → src/svg.js
+ *   --superlatives       → src/superlatives.js
+ *
+ * Core behavior (no flags) emits: all.geojson, stages/, days/, hours/, stats.json.
+ * Every other output is opt-in via a flag (or enabled-by-default with a --no-X
+ * counterpart) so a minimal run never touches the network or shells out.
+ *
+ * External deps: d3 (v7) for src/svg.js only; Node 18+ stdlib + global fetch
+ * for everything else. Optional external binaries: `exiftool` (--media),
+ * `gdalbuildvrt` / `gdaldem` / `gdal_contour` (--dem).
+ */
 
 import { readFileSync, readdirSync, mkdirSync, writeFileSync, statSync } from 'node:fs';
 import { join, basename, extname, resolve, relative } from 'node:path';

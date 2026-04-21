@@ -1,22 +1,61 @@
-// Fun GPS-derived stats. Year-in-review vibes from a single ride.
-// Computed from deduped trkpts + perStage + optional weather enrichment +
-// optional places.geojson (OSM enrichment) for the "town signs you passed" feel.
+/**
+ * superlatives.js — "year in review" stats for a single ride, derived
+ * entirely from GPS trkpts plus optional weather / OSM enrichment side-cars.
+ *
+ * Role in the pipeline: called once per run after dedupe + stage segmentation.
+ * Consumes deduped trkpts (full resolution), per-stage records (for weather),
+ * and the output directory (to read optional `places.geojson` / `toots.geojson`
+ * enrichment files). Emits a single plain-JSON object that the driver writes
+ * to `superlatives.json`; a separate entry point pretty-prints it to stdout.
+ *
+ * Contract:
+ *   - All algorithms are O(n) or O(n·k) with small k; safe on multi-hour GPS
+ *     logs (hundreds of thousands of points).
+ *   - Functions return `null` (not throw, not `{}`) when inputs are too
+ *     short or missing required fields. Callers must null-guard.
+ *   - No mutation of input arrays.
+ *   - Only `computeSuperlatives` and `printSuperlatives` do I/O (and only
+ *     the former, via the enrichment side-car reads).
+ *
+ * External dependencies: `./gpx.js` (haversine, bearing), `node:fs`, `node:path`.
+ *
+ * Exports:
+ *   - computeSuperlatives — run every analyser, return the combined JSON blob
+ *   - printSuperlatives   — render the blob as a Unicode-framed console block
+ */
 
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { haversine, bearing } from './gpx.js';
+
+// ═══ constants ═══
 
 const MILE_M = 1609.344;
 const FIELD_M = 91.44;           // football field = 100 yd
 const EMPIRE_M = 381;            // roof to top floor (ESB observatory)
 const EIFFEL_M = 300;
 const KILIMANJARO_M = 5895;
-const STRAIGHT_BEARING_TOL_DEG = 8;   // "straight" = heading drift < 8° cumulative
-const STRAIGHT_MIN_M = 100;           // only care about straights ≥ 100m
-const GRADE_WINDOW_M = 200;           // steepest-grade sliding window
-const CLIMB_MIN_M = 50;               // ignore climbs under this height
-const NONSTOP_MIN_MPS = 2.0;          // ~4.5 mph — counts as "moving"
-const NONSTOP_GAP_S = 30;             // a 30s+ pause ends a streak
+// "Straight enough" tolerance: cumulative |Δheading| must stay under 8° over
+// the entire candidate run. Tight enough to exclude highway sweepers, loose
+// enough that normal GPS noise doesn't shatter every straight into fragments.
+const STRAIGHT_BEARING_TOL_DEG = 8;
+// Ignore any straight under 100m — anything shorter is just "between two
+// consecutive GPS samples" and not interesting.
+const STRAIGHT_MIN_M = 100;
+// Sliding window for steepest-grade detection. 200m is long enough to span a
+// full hill face while short enough that local pitch changes still surface.
+const GRADE_WINDOW_M = 200;
+// Minimum climb size (meters) to count as a "biggest climb" candidate. Keeps
+// GPS elevation drift around flat terrain out of the results.
+const CLIMB_MIN_M = 50;
+// Threshold for "moving" when counting nonstop streaks. 2 m/s ≈ 4.5 mph —
+// above walking speed, safely above GPS-at-rest jitter.
+const NONSTOP_MIN_MPS = 2.0;
+// A pause ≥ 30s terminates a nonstop streak. Shorter than this (stoplight,
+// brief slowdown) doesn't break the streak.
+const NONSTOP_GAP_S = 30;
+
+// ═══ private helpers ═══
 
 function fmtPace(sec) {
   const m = Math.floor(sec / 60);
@@ -26,7 +65,51 @@ function fmtPace(sec) {
 
 function iso(t) { return t != null ? new Date(t).toISOString() : null; }
 
-// ---- fastest mile (sliding window over 1-mile chunks) ----
+// ═══ typedefs ═══
+
+/**
+ * @typedef {Object} Trkpt
+ * @property {number} lat
+ * @property {number} lon
+ * @property {number|null} ele   - meters, or null when GPX had no <ele>
+ * @property {number|null} time  - ms since epoch, or null when untimed
+ */
+
+/**
+ * @typedef {Object} Stage
+ * @property {number} i
+ * @property {Trkpt[]} pts
+ * @property {string} day
+ * @property {Object} stats
+ */
+
+/**
+ * @typedef {Object} LocatedPoint
+ * @property {number} lat
+ * @property {number} lon
+ * @property {string|null} time_iso
+ */
+
+// ═══ algorithm: fastest mile ═══
+
+/**
+ * Fastest mile = the 1-mile window along the track with the minimum elapsed
+ * time. Implemented as a two-pointer sliding window so it runs in O(n)
+ * despite scanning every starting point.
+ *
+ * Invariant: we maintain `dist` = cumulative haversine distance from points[i]
+ * to points[j]. At each outer step:
+ *   1. Advance `j` forward until we've accumulated ≥ MILE_M (the window
+ *      always ends on the first point that crosses the mile boundary — a
+ *      slight over-estimate, ~one sample worth).
+ *   2. Record the elapsed seconds, compute MPH, keep the best.
+ *   3. Subtract the segment we're about to leave behind as `i` advances.
+ *
+ * Speeds outside (1, 200) mph are rejected as GPS glitches.
+ *
+ * @param {Trkpt[]} points
+ * @returns {Object|null}
+ */
 function fastestMile(points) {
   if (points.length < 2) return null;
   let best = null;
@@ -52,12 +135,26 @@ function fastestMile(points) {
         };
       }
     }
+    // Advance `i` by one: drop the segment (i → i+1) from the window.
     if (i < points.length - 1) dist -= haversine(points[i], points[i + 1]);
   }
   return best;
 }
 
-// ---- longest non-stop streak ----
+// ═══ algorithm: longest nonstop streak ═══
+
+/**
+ * Longest continuous "riding" streak. A streak starts on the first moving
+ * sample after a rest and grows while consecutive samples stay moving. Any
+ * gap ≥ NONSTOP_GAP_S between moving samples resets the streak start.
+ *
+ * We track by duration (elapsed time from streak start to latest moving
+ * sample), not by distance, because long slow sections should count just as
+ * much as short fast ones for "didn't stop."
+ *
+ * @param {Trkpt[]} points
+ * @returns {Object|null}
+ */
 function longestNonstop(points) {
   let best = null;
   let streakStart = null;
@@ -94,7 +191,13 @@ function longestNonstop(points) {
   return best;
 }
 
-// ---- elevation stuff ----
+// ═══ algorithm: elevation ═══
+
+/**
+ * Highest and lowest single points on the track, by elevation.
+ * @param {Trkpt[]} points
+ * @returns {{ highest: Object|null, lowest: Object|null }}
+ */
 function elevationExtremes(points) {
   let highEle = null, lowEle = null;
   let high = null, low = null;
@@ -112,7 +215,20 @@ function elevationExtremes(points) {
   return { highest: high, lowest: low };
 }
 
-// Biggest climb: max (ele - runningMin) over the timeline.
+/**
+ * Biggest climb = classic "max profit" on the elevation series: walk forward,
+ * track the lowest elevation seen so far (runMin), and record the biggest
+ * (current - runMin) observed. The trick: you never need to consider any
+ * valley OTHER than the running min, because a later valley combined with
+ * the same peak would produce a strictly smaller climb. Works regardless of
+ * how many peaks/valleys the trip has, in a single O(n) pass.
+ *
+ * Distance from runMinIdx → i is computed lazily when we find a new best,
+ * which keeps the common case (no new best) O(1) per step.
+ *
+ * @param {Trkpt[]} points
+ * @returns {Object|null}
+ */
 function biggestClimb(points) {
   let runMin = null, runMinIdx = -1;
   let best = null;
@@ -139,8 +255,14 @@ function biggestClimb(points) {
   return best;
 }
 
-// Biggest descent: max (runningMax - current) — symmetric to biggestClimb.
-// This is "the biggest single drop" rather than "cumulative descent."
+/**
+ * Biggest descent: mirror image of biggestClimb — max (runMax - current).
+ * NOT cumulative descent (that's a different "total feet dropped" metric);
+ * this is the single largest contiguous drop from any prior high point.
+ *
+ * @param {Trkpt[]} points
+ * @returns {Object|null}
+ */
 function biggestDescent(points) {
   let runMax = null, runMaxIdx = -1;
   let best = null;
@@ -166,7 +288,15 @@ function biggestDescent(points) {
   return best;
 }
 
-// Steepest grade over a ~200m sliding window.
+/**
+ * Steepest grade over a GRADE_WINDOW_M sliding window. Uses the same
+ * two-pointer trick as fastestMile: `j` chases `i` forward so the window's
+ * arc-length stays ≥ GRADE_WINDOW_M, and we use |Δele| / distance as the
+ * grade. Absolute value means uphill/downhill both count.
+ *
+ * @param {Trkpt[]} points
+ * @returns {Object|null}
+ */
 function steepestGrade(points) {
   let best = null;
   let j = 0;
@@ -195,7 +325,16 @@ function steepestGrade(points) {
   return best;
 }
 
-// ---- compass extremes ----
+// ═══ algorithm: compass extremes ═══
+
+/**
+ * The four directional extrema: northernmost, southernmost, easternmost,
+ * westernmost trkpts. Naive O(n) — no wrap-around handling, so crossing the
+ * antimeridian will produce odd east/west values. Acceptable for the
+ * overwhelming common case of one-continent rides.
+ *
+ * @param {Trkpt[]} points
+ */
 function compassExtremes(points) {
   let n = null, s = null, e = null, w = null;
   for (const p of points) {
@@ -208,7 +347,16 @@ function compassExtremes(points) {
   return { north: mk(n), south: mk(s), east: mk(e), west: mk(w) };
 }
 
-// ---- turning / straightness ----
+// ═══ algorithm: turning / straightness ═══
+
+/**
+ * Total cumulative absolute heading change along the track, and the density
+ * of turning (degrees per mile). Each adjacent pair of points gives a
+ * heading; the |Δheading| between consecutive headings is summed, normalized
+ * into (-180°, 180°] so we never double-count a turn that crosses 360°.
+ *
+ * @param {Trkpt[]} points
+ */
 function turning(points) {
   let totalAbsDeg = 0;
   let totalDistM = 0;
@@ -218,6 +366,8 @@ function turning(points) {
     headings.push(bearing(points[i - 1], points[i]));
   }
   for (let i = 1; i < headings.length; i++) {
+    // Normalize Δheading into (-180°, 180°]: crossing 360° shouldn't read
+    // as a 359° swing when the rider just ticked one degree the other way.
     let dh = headings[i] - headings[i - 1];
     while (dh > 180) dh -= 360;
     while (dh < -180) dh += 360;
@@ -230,7 +380,18 @@ function turning(points) {
   };
 }
 
-// Longest straight: longest run where cumulative |Δheading| stays under tolerance.
+/**
+ * Longest straight: the longest contiguous run where cumulative |Δheading|
+ * stays under STRAIGHT_BEARING_TOL_DEG. We use cumulative (not per-step) so
+ * a slow sweeping curve — one degree at a time — is still correctly
+ * rejected once the total drift exceeds tolerance.
+ *
+ * Outer `i` advances to at least `j` each time so we don't rescan the same
+ * run of points that we just rejected.
+ *
+ * @param {Trkpt[]} points
+ * @returns {Object|null}
+ */
 function longestStraight(points) {
   if (points.length < 3) return null;
   let best = null;
@@ -260,12 +421,23 @@ function longestStraight(points) {
         end:   { lat: points[j].lat, lon: points[j].lon, time_iso: iso(points[j].time) },
       };
     }
+    // Skip past the rejected run. If the run was >1 point long we jump to j;
+    // otherwise advance at least one step so we always make progress.
     i = Math.max(i + 1, j);
   }
   return best;
 }
 
-// ---- distributions ----
+// ═══ algorithm: distributions ═══
+
+/**
+ * Fraction of moving time spent in each speed bin. Stopped samples
+ * (< 0.5 mph) are excluded from both numerator and denominator so parking
+ * doesn't count as "slow riding."
+ *
+ * @param {Trkpt[]} points
+ * @returns {Object|null} map of bin → fraction [0,1], or null if no motion.
+ */
 function speedBucketDistribution(points) {
   const buckets = { slow: 0, moderate: 0, fast: 0, highway: 0 };
   let totalSec = 0;
@@ -287,6 +459,14 @@ function speedBucketDistribution(points) {
   return Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, +(v / totalSec).toFixed(3)]));
 }
 
+/**
+ * Fraction of elapsed time spent in each time-of-day bucket. The bucket is
+ * decided by the MIDPOINT of each interval, so a sample straddling a
+ * boundary gets assigned by its center rather than its endpoint.
+ *
+ * @param {Trkpt[]} points
+ * @param {number} tzH timezone offset (hours).
+ */
 function timeOfDayDistribution(points, tzH) {
   const buckets = { early_morning: 0, morning: 0, afternoon: 0, evening: 0, night: 0 };
   let totalSec = 0;
@@ -308,7 +488,14 @@ function timeOfDayDistribution(points, tzH) {
   return Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, +(v / totalSec).toFixed(3)]));
 }
 
-// ---- weather superlatives (if present on perStage) ----
+// ═══ algorithm: weather superlatives ═══
+
+/**
+ * Hottest / coldest / windiest stage, if any stages have weather enrichment.
+ * Uses reduce-with-extremum so ties return the first encountered.
+ *
+ * @param {Stage[]} perStage
+ */
 function weatherSuperlatives(perStage) {
   const withWx = perStage.filter(s => s.stats?.weather).map(s => ({ stage: s.i, day: s.day, w: s.stats.weather }));
   if (!withWx.length) return null;
@@ -322,14 +509,33 @@ function weatherSuperlatives(perStage) {
   };
 }
 
-// ---- f1-style telemetry (derived from GPS alone) ----
-// Compute per-point smoothed speed (m/s) and acceleration (m/s²), then find:
-//   top speed (with where/when), 0-60 time, % time above 60mph,
-//   max lateral G (v²/r cornering), max braking G, max launch G, smoothness score.
+// ═══ algorithm: f1-style telemetry ═══
+
+/**
+ * Performance telemetry from GPS alone. Computes:
+ *   - top speed (mph/kmh + where)
+ *   - 0-60 time (from a true standing stop)
+ *   - % of ride above 60 mph
+ *   - max lateral G (cornering, v²/r)
+ *   - max braking G and max launch G (dv/dt, 2s window)
+ *   - smoothness score 1-10 from σ of longitudinal acceleration
+ *
+ * All derived from a single smoothed speed series (5-second rolling window)
+ * to blunt GPS-jitter spikes. With raw samples, random 1-point position
+ * errors of 10+ meters translate into 40+ mph instantaneous blips that
+ * would hijack every extremum. The 5s window averages those out.
+ *
+ * @param {Trkpt[]} points
+ * @returns {Object|null}
+ */
 function telemetry(points) {
   if (points.length < 5) return null;
 
-  // Smoothed speed: running 3s window. Kills per-sample GPS jitter.
+  // --- smoothed speed series ---
+  // For each point i, advance j forward until at least 5s of elapsed time
+  // has accumulated, then speed[i] = distance(i..j) / elapsed(i..j). This is
+  // a forward-looking window (not centered) so the last 5 samples have no
+  // way to extend forward; we backfill them with the last valid value.
   const speedMps = new Array(points.length).fill(0);
   const timeMs = points.map(p => p.time);
   for (let i = 0; i < points.length; i++) {
@@ -348,7 +554,7 @@ function telemetry(points) {
   }
   for (let i = points.length - 5; i < points.length; i++) speedMps[i] = speedMps[points.length - 6] ?? 0;
 
-  // Top speed
+  // --- top speed ---
   let topIdx = 0;
   for (let i = 0; i < points.length; i++) if (speedMps[i] > speedMps[topIdx]) topIdx = i;
   const topMph = speedMps[topIdx] * 2.23694;
@@ -360,7 +566,7 @@ function telemetry(points) {
     time_iso: iso(points[topIdx].time),
   } : null;
 
-  // Time above 60 mph
+  // --- time above 60 mph ---
   const SIXTY_MPS = 60 / 2.23694;
   let above60Sec = 0, totalSec = 0;
   for (let i = 1; i < points.length; i++) {
@@ -376,7 +582,12 @@ function telemetry(points) {
     pct_of_ride: +(above60Sec / totalSec).toFixed(3),
   } : null;
 
-  // 0-60: find the fastest interval where speed rose from <5mph (sustained 2+s) to >=60mph.
+  // --- 0-60 time ---
+  // A real 0-60 needs a true standing stop, not just "was briefly slow."
+  // We require the rider to be below 5 mph for ≥ 2s (stillUntil tracks when
+  // that stop began), then look ahead up to 30s for the first sample ≥ 60.
+  // If speed drops back below 5 mph before reaching 60 we abandon that
+  // attempt — it was a stall, not a launch.
   const FIVE_MPS = 5 / 2.23694;
   let zeroToSixty = null;
   let stillUntil = null;
@@ -406,7 +617,11 @@ function telemetry(points) {
     }
   }
 
-  // Longitudinal G (braking / launch) from 2-second smoothed dv/dt.
+  // --- longitudinal G (braking / launch) ---
+  // dv/dt over a 2-second window, divided by 9.81 to convert to g-force.
+  // Negative g = deceleration (braking); positive g = acceleration (launch).
+  // The 2s window matches the smoothed speed series scale — shorter would
+  // just re-expose noise, longer would miss genuine hard stops.
   let maxBrakeG = null, maxLaunchG = null;
   for (let i = 0; i < points.length - 1; i++) {
     if (timeMs[i] == null) continue;
@@ -424,17 +639,37 @@ function telemetry(points) {
       maxLaunchG = { g: +g.toFixed(2), mph_delta: +(dv * 2.23694).toFixed(1), lat: points[i].lat, lon: points[i].lon, time_iso: iso(timeMs[i]) };
     }
   }
-  // Sanity clamp: GPS glitches can produce absurd accelerations. Cap at ±3G.
+  // Sanity clamp: GPS glitches can produce absurd accelerations. Cap at ±3G,
+  // which is beyond anything a motorcycle on public roads plausibly does.
   if (maxBrakeG && maxBrakeG.g < -3) maxBrakeG.g = -3;
   if (maxLaunchG && maxLaunchG.g > 3) maxLaunchG.g = 3;
 
-  // Lateral G via 3-point curvature × v².
+  // --- lateral G via 3-point curvature ---
+  // Fit a circle through three consecutive points (A=i-2, B=i, C=i+2). The
+  // circumradius R of that triangle equals the instantaneous turn radius;
+  // lateral acceleration = v²/R, in G's = v²/(R·9.81).
+  //
+  // The standard formula:  R = (|AB| · |BC| · |AC|) / (2 · |triangle area|)
+  // Using i±2 (instead of i±1) gives a wider baseline and blunts per-sample
+  // jitter — a 1m GPS wiggle on a straight creates a phantom ~1m radius if
+  // you use i±1, whereas i±2 spreads the noise over ~4× the distance.
+  //
+  // Coordinates are converted from lat/lon to local meters via an
+  // equirectangular projection centered at B — good enough for distances
+  // under a few km, which is always the case between three GPS samples.
+  //
+  // Guards:
+  //   - Any side < 2m → skip (sub-GPS-precision triangle)
+  //   - Signed area < 1 → skip (points are nearly collinear = infinite R)
+  //   - R < 3m → skip (impossibly tight, definitely GPS noise)
+  //   - R > 2000m → skip (essentially a straight, G too low to care about)
+  //   - Computed G > 4 → skip (would require >150mph in a 90m turn; noise)
   let maxLateralG = null;
   for (let i = 2; i < points.length - 2; i++) {
-    // Use points i-2, i, i+2 for a smoother triangle
     const A = points[i - 2], B = points[i], C = points[i + 2];
     if (timeMs[i] == null) continue;
-    // equirectangular projection centered at B
+    // equirectangular projection centered at B: mx = meters per degree
+    // longitude at this latitude, my = meters per degree latitude (constant).
     const lat0 = B.lat * Math.PI / 180;
     const mx = 111320 * Math.cos(lat0);
     const my = 110540;
@@ -444,6 +679,7 @@ function telemetry(points) {
     const cb = Math.hypot(cx, cy);
     const ac = Math.hypot(ax - cx, ay - cy);
     if (ab < 2 || cb < 2 || ac < 2) continue; // too short to be meaningful
+    // 2× signed triangle area via the cross product.
     const area2 = Math.abs(ax * cy - ay * cx);
     if (area2 < 1) continue; // nearly collinear
     const radius = (ab * cb * ac) / (2 * area2);
@@ -461,8 +697,12 @@ function telemetry(points) {
     }
   }
 
-  // Smoothness: stdev of longitudinal acceleration, mapped to 1-10 where 10 = butter.
-  // σ ≈ 0 → 10; σ ≈ 1 m/s² → 5; σ ≥ 2.5 m/s² → 1.
+  // --- smoothness score ---
+  // σ of per-sample longitudinal acceleration mapped to 1–10 where 10 = butter.
+  // Calibration:  σ ≈ 0 → 10   |   σ ≈ 1 m/s² → 5   |   σ ≥ 2.5 m/s² → 1
+  // Score = round(10 − 3σ), clamped to [1, 10]. 3× was picked so a typical
+  // commute (~1 m/s² σ) lands mid-scale while a truly smooth long highway
+  // cruise can hit 9–10.
   const accels = [];
   for (let i = 1; i < points.length; i++) {
     if (timeMs[i - 1] == null || timeMs[i] == null) continue;
@@ -490,7 +730,14 @@ function telemetry(points) {
   };
 }
 
-// ---- places traversed (from OSM enrichment if present) ----
+// ═══ enrichment side-car readers ═══
+
+/**
+ * Read `places.geojson` (written by an OSM enrichment pass) and emit a
+ * chronologically-sorted list of towns the track passed. Returns null if
+ * the file is missing or empty.
+ * @param {string} outDir
+ */
 function placesTraversed(outDir) {
   const p = join(outDir, 'places.geojson');
   if (!existsSync(p)) return null;
@@ -510,7 +757,11 @@ function placesTraversed(outDir) {
   return items.length ? items : null;
 }
 
-// ---- toots posted during the ride (from --mastodon if present) ----
+/**
+ * Read `toots.geojson` (written when --mastodon is passed) and emit the
+ * toots in their original order. Returns null if missing/empty.
+ * @param {string} outDir
+ */
 function tootsPosted(outDir) {
   const p = join(outDir, 'toots.geojson');
   if (!existsSync(p)) return null;
@@ -528,7 +779,17 @@ function tootsPosted(outDir) {
   }));
 }
 
-// ---- equivalencies ----
+// ═══ equivalencies ═══
+
+/**
+ * "Roughly equivalent to…" flavor text. Compares totals against a grab-bag
+ * of well-known yardsticks (football fields, marathons, Empire State, etc.)
+ * Each comparison only surfaces if the ratio crosses a humility threshold
+ * so we don't declare a 2-mile spin "0.01 marathons."
+ *
+ * @param {{ distance_mi?: number, distance_km?: number, ele_gain_m?: number }} totals
+ * @returns {string[]}
+ */
 function equivalencies(totals) {
   const out = [];
   const miles = totals.distance_mi ?? 0;
@@ -558,7 +819,22 @@ function equivalencies(totals) {
   return out;
 }
 
-// ---- main ----
+// ═══ public API ═══
+
+/**
+ * Run every analyser against the deduped track and return one flat object
+ * containing all superlatives. Any analyser may return null; the consumer
+ * (printSuperlatives, JSON writer) handles missing keys gracefully.
+ *
+ * @param {Trkpt[]} deduped  Full-resolution deduped trkpts.
+ * @param {Stage[]} perStage Per-stage records (used for weather enrichment).
+ * @param {{ tz?: number, out: string }} opts Run options; `out` is the output
+ *   directory where enrichment side-cars may live.
+ * @param {{ distance_mi?: number, distance_km?: number, ele_gain_m?: number }} totals
+ *   Trip totals (from segmentStats on the full deduped track).
+ * @returns {Object|null} The compiled superlatives object, or null when
+ *   deduped is empty.
+ */
 export function computeSuperlatives(deduped, perStage, opts, totals) {
   if (!deduped.length) return null;
   const tzH = opts.tz ?? 0;
@@ -583,7 +859,8 @@ export function computeSuperlatives(deduped, perStage, opts, totals) {
   return result;
 }
 
-// ---- pretty console block ----
+// ═══ pretty console block ═══
+
 function fmtPct(n) { return n != null ? `${Math.round(n * 100)}%` : '—'; }
 function fmtLatLon(p) { return p ? `${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}` : '—'; }
 function fmtLocalTime(isoStr, tzH) {
@@ -596,6 +873,14 @@ function compassArrow(deg) {
   return dirs[Math.round(deg / 45) % 8];
 }
 
+/**
+ * Render the superlatives object to stdout as a framed, aligned block.
+ * Purely a presentation function — no return value, no side effects beyond
+ * `console.log`. Safe to call when `sup` is null (no-op).
+ *
+ * @param {Object|null} sup  Output of computeSuperlatives().
+ * @param {{ tz?: number }} opts  Used only for local-time formatting.
+ */
 export function printSuperlatives(sup, opts) {
   if (!sup) return;
   const tzH = opts.tz ?? 0;

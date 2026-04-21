@@ -1,3 +1,26 @@
+/**
+ * crossings.js — detect state/province/country transitions along the track.
+ *
+ * Role in the pipeline: opt-in enrichment (`--enrich crossings`). Reads the
+ * bundled Natural Earth 50m admin-1 polygons (US/CA/MX shipped in
+ * `data/states.geojson`) and walks each trackpoint through point-in-polygon
+ * ray-casting. Each change from one polygon to another emits a `kind:"crossing"`
+ * Point feature at the first point in the new state. Adds one terminal
+ * `kind:"end_state"` marker at the trip's last point.
+ *
+ * Contract: pure computation (no network). Reads the states geojson once at
+ * module load and builds a per-feature bbox index so per-point locate is
+ * O(K) in the number of candidate polygons after bbox pruning — roughly
+ * O(1) in practice for any single-region trip.
+ *
+ * External dependencies: `../gpx.js` (haversine, dayKey), `data/states.geojson`
+ * (Natural Earth 50m Admin-1, US + CA + MX only — add more regions to the
+ * asset to extend coverage).
+ *
+ * Exports:
+ *   computeCrossings(points, tzH, trip) → Point Feature[] (crossings + end_state)
+ */
+
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { haversine, dayKey } from '../gpx.js';

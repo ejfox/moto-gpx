@@ -1,6 +1,36 @@
-// SVG preview generator — map view, elevation profile, speed profile.
-// Uses d3-geo for projection and d3-scale/d3-shape for the profile charts.
-// Each SVG responds to prefers-color-scheme via an inline <style> block.
+/**
+ * svg.js — SVG preview generator: map view, elevation profile, speed profile.
+ *
+ * Role in the pipeline: runs at the very end of a moto-gpx invocation, after
+ * all geojson and enrichment writes. Reads places.geojson / toots.geojson off
+ * disk if present, renders six SVGs total (light + dark per preview), writes
+ * them into the output folder, and returns their relative paths so the
+ * orchestrator can log them.
+ *
+ * Contract: fail-soft. Renders what it can from the data it has; bails on any
+ * individual preview that doesn't have enough points, returns what succeeded.
+ * Pure writes — no network, no external binaries.
+ *
+ * External dependencies: d3 (v7) — geoMercator / geoConicConformal / geoPath
+ * for projection, scaleLinear for chart axes, line/area for filled profiles,
+ * extent/ticks for nice axis labels. This is the only src/ module with a
+ * runtime dep; all others are stdlib only.
+ *
+ * Projection strategy: pick Lambert conformal conic for trips whose bbox
+ * fits inside 40° lon × 25° lat (essentially state-plane-grade fidelity with
+ * parallels auto-fitted to the trip extent), fall back to Mercator for
+ * continental / antimeridian crossings. See pickProjection() for the details.
+ *
+ * Theme: SVGs loaded via <img> don't inherit prefers-color-scheme from the
+ * embedding page, so we emit two concrete palettes (light + dark) and let
+ * <picture> + media-conditional <source> do the switching.
+ *
+ * Exports:
+ *   renderMapSvg         — single map preview SVG
+ *   renderElevationSvg   — single elevation-profile SVG
+ *   renderSpeedSvg       — single speed-profile SVG (5s-smoothed mph)
+ *   writeSvgPreviews     — orchestrator: writes both variants of all three
+ */
 
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
