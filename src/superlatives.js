@@ -491,9 +491,6 @@ function telemetry(points) {
 }
 
 // ---- places traversed (from OSM enrichment if present) ----
-// Reads places.geojson if the user ran --enrich osm. Returns a chronologically
-// sorted list of places with their timestamps — the "town signs you passed"
-// view.
 function placesTraversed(outDir) {
   const p = join(outDir, 'places.geojson');
   if (!existsSync(p)) return null;
@@ -511,6 +508,24 @@ function placesTraversed(outDir) {
     }))
     .sort((a, b) => Date.parse(a.time_iso) - Date.parse(b.time_iso));
   return items.length ? items : null;
+}
+
+// ---- toots posted during the ride (from --mastodon if present) ----
+function tootsPosted(outDir) {
+  const p = join(outDir, 'toots.geojson');
+  if (!existsSync(p)) return null;
+  let fc;
+  try { fc = JSON.parse(readFileSync(p, 'utf8')); } catch { return null; }
+  if (!fc?.features?.length) return null;
+  return fc.features.map(f => ({
+    index: f.properties.index,
+    time_iso: f.properties.time_iso,
+    content: f.properties.content,
+    url: f.properties.url,
+    favourites: f.properties.favourites,
+    reblogs: f.properties.reblogs,
+    media_count: f.properties.media_count,
+  }));
 }
 
 // ---- equivalencies ----
@@ -562,6 +577,7 @@ export function computeSuperlatives(deduped, perStage, opts, totals) {
     weather: weatherSuperlatives(perStage),
     performance: telemetry(deduped),
     places_traversed: placesTraversed(opts.out),
+    toots_posted: tootsPosted(opts.out),
     equivalent_to: equivalencies(totals),
   };
   return result;
@@ -695,6 +711,19 @@ export function printSuperlatives(sup, opts) {
     if (items.length > show.length) {
       lines.push(`    … and ${items.length - show.length} more`);
     }
+  }
+
+  if (sup.toots_posted?.length) {
+    lines.push('');
+    lines.push(`  posted during the ride:`);
+    for (const t of sup.toots_posted.slice(0, 10)) {
+      const time = fmtLocalTime(t.time_iso, tzH);
+      const preview = (t.content || '').replace(/\n+/g, ' · ').slice(0, 90);
+      const tail = (t.content || '').length > 90 ? '…' : '';
+      const engagement = (t.favourites || t.reblogs) ? ` (♥${t.favourites} ↻${t.reblogs})` : '';
+      lines.push(`    ${time}  [${t.index}] ${preview}${tail}${engagement}`);
+    }
+    if (sup.toots_posted.length > 10) lines.push(`    … and ${sup.toots_posted.length - 10} more`);
   }
 
   if (sup.equivalent_to?.length) {

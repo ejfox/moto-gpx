@@ -19,6 +19,7 @@ import { fetchOSM } from './src/enrich/osm.js';
 import { fetchOSRMRoutes } from './src/enrich/routes.js';
 import { computeCrossings } from './src/enrich/crossings.js';
 import { attachSunPosition } from './src/enrich/sun.js';
+import { fetchMastodonPosts } from './src/enrich/mastodon.js';
 import { writeStarterStyles } from './src/qml.js';
 import { computeSuperlatives, printSuperlatives } from './src/superlatives.js';
 import { writeSvgPreviews } from './src/svg.js';
@@ -60,6 +61,9 @@ DEM (needs GDAL: brew install gdal):
 Enrichments (opt-in; require network):
   --enrich <list>      Comma list: weather, osm, routes, crossings, sun, all
                        e.g. --enrich weather,osm,sun
+  --mastodon <handle>  Fetch your public toots during the ride and place each
+                       one on the map at the GPS position you were at when
+                       you posted. Handle: @user@instance.social (or full URL)
 
 Superlatives (GPS-derived fun stats, on by default):
   --no-superlatives    Skip the post-run banner
@@ -98,6 +102,7 @@ const opts = {
   enrich: new Set(),
   superlatives: true,
   svg: true,
+  mastodon: null,
 };
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i];
@@ -129,6 +134,7 @@ for (let i = 1; i < argv.length; i++) {
   else if (a === '--no-superlatives') opts.superlatives = false;
   else if (a === '--svg') opts.svg = true;
   else if (a === '--no-svg') opts.svg = false;
+  else if (a === '--mastodon') opts.mastodon = argv[++i];
   else if (a === '--enrich') {
     const list = argv[++i].split(',').map(s => s.trim()).filter(Boolean);
     if (list.includes('all')) {
@@ -456,6 +462,15 @@ async function main() {
     } catch (e) { console.error(`    crossings failed: ${e.message}`); }
   }
 
+  let mastodonResult = null;
+  if (opts.mastodon && deduped.length) {
+    console.log(`  ✎ mastodon: ${opts.mastodon}`);
+    try {
+      mastodonResult = await fetchMastodonPosts(opts.mastodon, perStage, deduped, opts.out, opts.name);
+      if (mastodonResult) enrichResults.mastodon = { count: mastodonResult.count, account: mastodonResult.account };
+    } catch (e) { console.error(`    mastodon failed: ${e.message}`); }
+  }
+
   // -------- DEM --------
   let demInfo = null;
   if (opts.dem) {
@@ -556,6 +571,7 @@ async function main() {
   if (enrichResults.osm) console.log(`    osm layers (${Object.keys(enrichResults.osm).join(', ')})`);
   if (enrichResults.routes) console.log(`    optimal_routes.geojson (${enrichResults.routes.count ?? '?'} stages routed)`);
   if (enrichResults.weather) console.log(`    weather_timeline.json (${enrichResults.weather.stages ?? '?'} stages)`);
+  if (enrichResults.mastodon) console.log(`    toots.geojson (${enrichResults.mastodon.count} posts from ${enrichResults.mastodon.account})`);
   if (demInfo) {
     const parts = [`${demInfo.tiles ?? '?'} tiles`];
     if (demInfo.vrt) parts.push('vrt');

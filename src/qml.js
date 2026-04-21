@@ -154,6 +154,9 @@ function stylesByLayer() {
     // optimal_routes: subtle gray so actual route pops on top
     optimal_routes: qml(singleSymbolLine('120,120,120,180', 0.6)),
 
+    // toots: bold purple circles, labeled with the numeric index
+    toots: qml(singleSymbolMarker('99,100,255,240', 4.5, 'circle'), labeling('index')),
+
     // all / stages / days: single-symbol default. Users will typically re-style by stage or day.
     all: qml(singleSymbolLine('31,120,180,230', 1.2)),
     stages: qml(singleSymbolLine('31,120,180,230', 1.2)),
@@ -204,6 +207,7 @@ export function writeStarterStyles(outDir) {
   maybeAttach(tpl.pois, outDir, 'pois');
   maybeAttach(tpl.roads, outDir, 'roads');
   maybeAttach(tpl.optimal_routes, outDir, 'optimal_routes');
+  maybeAttach(tpl.toots, outDir, 'toots');
 
   // Directory-based layers: one .qml per .geojson.
   distributeToDir(tpl.stages, outDir, 'stages');

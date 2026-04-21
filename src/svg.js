@@ -44,8 +44,8 @@ function pickProjection(bbox) {
 // let the embedding page pick via <picture> + media-conditional <source>.
 function themeStyle(dark) {
   const c = dark
-    ? { fg: '#e8e6e3', muted: '#9aa0a6', frame: '#8a8a8a', fill: '#2b2b2b', peak: '#ff6b6b', trough: '#6bd16b', acc1: '#ffb870', acc2: '#ff6b6b', acc3: '#8aa8ff' }
-    : { fg: '#111',    muted: '#555',    frame: '#111',    fill: '#ddd',    peak: '#c00',    trough: '#2a7a2a', acc1: '#7a4500', acc2: '#c00',    acc3: '#3a3a9a' };
+    ? { fg: '#e8e6e3', muted: '#9aa0a6', frame: '#8a8a8a', fill: '#2b2b2b', peak: '#ff6b6b', trough: '#6bd16b', acc1: '#ffb870', acc2: '#ff6b6b', acc3: '#8aa8ff', toot: '#ff277d', tootText: '#0b0b0b' }
+    : { fg: '#111',    muted: '#555',    frame: '#111',    fill: '#ddd',    peak: '#c00',    trough: '#2a7a2a', acc1: '#7a4500', acc2: '#c00',    acc3: '#3a3a9a', toot: '#6364ff', tootText: '#fff' };
   return `
   <style>
     :root {
@@ -58,6 +58,8 @@ function themeStyle(dark) {
       --accent-1: ${c.acc1};
       --accent-2: ${c.acc2};
       --accent-3: ${c.acc3};
+      --toot: ${c.toot};
+      --toot-text: ${c.tootText};
     }
     .mg-bg { fill: none; }
     .mg-fg { fill: var(--fg); }
@@ -81,11 +83,13 @@ function themeStyle(dark) {
     .mg-acc-3-label { fill: var(--accent-3); font-family: Helvetica, Arial, sans-serif; font-weight: bold; }
     .mg-start { fill: var(--trough); stroke: var(--frame); stroke-width: 0.5; }
     .mg-end { fill: var(--peak); stroke: var(--frame); stroke-width: 0.5; }
+    .mg-toot { fill: var(--toot); stroke: var(--frame); stroke-width: 0.8; }
+    .mg-toot-label { fill: var(--toot-text); font-family: Helvetica, Arial, sans-serif; }
   </style>`;
 }
 
 // ---------- map preview ----------
-export function renderMapSvg(perStage, deduped, opts, superlatives, places, dark = false) {
+export function renderMapSvg(perStage, deduped, opts, superlatives, places, dark = false, toots = null) {
   if (!deduped.length || !perStage.length) return null;
 
   const MAX_W = 900;
@@ -164,6 +168,17 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places, dark
     if (townMarks.length >= 15) break;
   }
 
+  // toot markers — small numbered dots with a pale link-colored ring
+  const tootMarks = [];
+  if (toots?.features?.length) {
+    for (const f of toots.features) {
+      if (!f.geometry?.coordinates) continue;
+      const [lon, lat] = f.geometry.coordinates;
+      const [x, y] = projection([lon, lat]);
+      tootMarks.push({ x, y, n: f.properties.index });
+    }
+  }
+
   // superlative annotations
   const annotations = [];
   if (superlatives?.highest) {
@@ -225,6 +240,11 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places, dark
     `<text class="mg-label" x="${(t.x + 5).toFixed(1)}" y="${(t.y - 4).toFixed(1)}" font-size="10">${esc(t.name)}</text>`
   ).join('\n  ');
 
+  const tootSvg = tootMarks.map(t =>
+    `<circle class="mg-toot" cx="${t.x.toFixed(1)}" cy="${t.y.toFixed(1)}" r="7"/>` +
+    `<text class="mg-toot-label" x="${t.x.toFixed(1)}" y="${(t.y + 3.5).toFixed(1)}" text-anchor="middle" font-size="9" font-weight="bold">${t.n}</text>`
+  ).join('\n  ');
+
   const annotationSvg = annotations.map((a, i) => {
     const approxW = a.label.length * 6.5;
     const flipLeft = (a.x + 8 + approxW) > frameX1 - 4;
@@ -253,6 +273,7 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places, dark
   ${track}
   ${startEnd}
   ${townSvg}
+  ${tootSvg}
   ${annotationSvg}
   ${scaleBar}
   ${footer}
@@ -405,9 +426,15 @@ export function writeSvgPreviews(outDir, perStage, deduped, opts, superlatives) 
     }
   } catch { /* ignore */ }
 
+  let toots = null;
+  try {
+    const tootsPath = join(outDir, 'toots.geojson');
+    if (existsSync(tootsPath)) toots = JSON.parse(readFileSync(tootsPath, 'utf8'));
+  } catch { /* ignore */ }
+
   const results = {};
-  const mapLight = renderMapSvg(perStage, deduped, opts, superlatives, places, false);
-  const mapDark = renderMapSvg(perStage, deduped, opts, superlatives, places, true);
+  const mapLight = renderMapSvg(perStage, deduped, opts, superlatives, places, false, toots);
+  const mapDark = renderMapSvg(perStage, deduped, opts, superlatives, places, true, toots);
   if (mapLight) {
     writeFileSync(join(outDir, 'preview-map.svg'), mapLight);
     writeFileSync(join(outDir, 'preview-map-dark.svg'), mapDark);
