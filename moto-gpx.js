@@ -63,7 +63,9 @@ Enrichments (opt-in; require network):
                        e.g. --enrich weather,osm,sun
   --mastodon <handle>  Fetch your public toots during the ride and place each
                        one on the map at the GPS position you were at when
-                       you posted. Handle: @user@instance.social (or full URL)
+                       you posted. Handle: @user@instance.social (or full URL),
+                       e.g. @ejfox@mastodon.social. Defaults to
+                       $MOTO_GPX_MASTODON env var if set.
 
 Superlatives (GPS-derived fun stats, on by default):
   --no-superlatives    Skip the post-run banner
@@ -102,7 +104,7 @@ const opts = {
   enrich: new Set(),
   superlatives: true,
   svg: true,
-  mastodon: null,
+  mastodon: process.env.MOTO_GPX_MASTODON || null,
 };
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i];

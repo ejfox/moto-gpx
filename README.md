@@ -151,11 +151,25 @@ network unless you pass `--enrich`.
 All enrichments retry once on rate-limit and degrade to "skip" on persistent
 failure — the run never aborts because one API is down.
 
+### Mastodon timeline
+
+```sh
+--mastodon @you@instance.social
+# or set once in your shell:
+export MOTO_GPX_MASTODON=@you@instance.social
+```
+
+Fetches your public toots from the trip's time window ±1hr and places each
+one on the map at the interpolated GPS position you were at when you posted.
+Writes `toots.geojson`, adds numbered circles to `preview-map.svg`, lists
+them chronologically in the superlatives banner.
+
 ### Recipes
 
 **Multi-day trip, everything on:**
 ```sh
-moto-gpx ~/trips/big-sur --media ~/trips/big-sur --enrich all --dem --dem-contour 100 --out ./out
+moto-gpx ~/trips/big-sur --media ~/trips/big-sur --enrich all --dem --dem-contour 100 \
+  --mastodon @ejfox@mastodon.social --out ./out
 ```
 
 **Just the tracks, no network — quick QGIS glance:**
