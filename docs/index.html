@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moto-gpx — GPX → QGIS-ready GeoJSON for motorcycle trip maps</title>
+<meta name="description" content="A zero-dependency Node.js CLI that turns a folder of GPX tracks into a stack of map-ready GeoJSON layers for hand-making dope QGIS maps of multi-day motorcycle trips.">
+<meta property="og:title" content="moto-gpx">
+<meta property="og:description" content="Zero-dep CLI: GPX folder → QGIS-ready layers (stops, speed bins, photos, weather, OSM roads, crossings, DEM, OSRM routes, sun position) + a superlatives banner.">
+<meta property="og:type" content="website">
+<link rel="stylesheet" href="https://assets.tools.ejfox.com/academic.css">
+<style>
+  /* minor tweaks specific to this page */
+  pre { overflow-x: auto; }
+  .hero-output { font-size: 0.85em; }
+  footer { margin-top: 4em; padding-top: 1.5em; border-top: 1px solid currentColor; }
+  code.inline-flag { white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>moto-gpx</h1>
+  <p class="muted">
+    A zero-dependency Node.js CLI that turns a folder of GPX tracks into a
+    stack of map-ready GeoJSON layers — tracks, stops, speed bins, photos,
+    weather, OSM roads and places, state crossings, SRTM hillshade, OSRM route
+    comparisons, sun position. Built for hand-making dope QGIS maps of
+    multi-day motorcycle trips.
+  </p>
+  <p class="mono">
+    <a href="https://github.com/ejfox/moto-gpx">github.com/ejfox/moto-gpx</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/ejfox/moto-gpx/releases">releases</a>
+    &nbsp;·&nbsp;
+    MIT
+  </p>
+</header>
+
+<hr>
+
+<section>
+  <h2>What it does</h2>
+  <p>
+    Given a folder of <code>.gpx</code> files — phone, Garmin, helmet cam,
+    whatever — moto-gpx walks recursively, merges every track point into one
+    sorted timeline, dedupes, splits on break-gaps to find stages, and emits
+    a stack of layered GeoJSON ready to drag straight into QGIS. Every
+    <code>.geojson</code> gets a sibling <code>.qml</code> style file so the
+    symbology auto-loads.
+  </p>
+  <p>
+    Optional enrichments add weather (Open-Meteo), OSM roads and place names
+    (Overpass), OSRM route comparisons (<em>what the car would've done</em>),
+    state/province crossings, sun position on each photo, and a seamless
+    SRTM DEM + hillshade (AWS Terrain Tiles + GDAL). A
+    <a href="https://exiftool.org/">exiftool</a>-backed
+    <code>--media</code> flag places photos and videos directly from EXIF
+    GPS or interpolates them along the track by timestamp.
+  </p>
+  <p>
+    Every run ends with a <em>superlatives</em> banner — the year-in-review
+    reading for a single ride.
+  </p>
+</section>
+
+<section>
+  <h2>Install</h2>
+  <pre><code>git clone https://github.com/ejfox/moto-gpx.git
+cd moto-gpx && npm link</code></pre>
+  <p class="muted">
+    Needs Node 18+. Optional: <code>exiftool</code> for <code>--media</code>,
+    GDAL for <code>--dem</code>. Zero <code>npm install</code> — the tool is
+    stdlib + <code>fetch</code> only.
+  </p>
+</section>
+
+<section>
+  <h2>Run</h2>
+  <pre><code>moto-gpx ~/trips/big-sur \
+  --media ~/trips/big-sur \
+  --enrich all \
+  --dem --dem-contour 100 \
+  --out ./big-sur-out</code></pre>
+  <p>
+    Then drop <code>./big-sur-out/</code> into QGIS. Every layer comes
+    pre-styled.
+  </p>
+</section>
+
+<section>
+  <h2>Output</h2>
+  <pre><code>out/
+├── all.geojson            every stage as a LineString
+├── stages/                one LineString per break-split stage
+├── days/                  one file per calendar day
+├── days-merged/           ONE unbroken LineString per day
+├── hours/                 per-hour slices
+├── stops.geojson          rest / long-rest / overnight Points
+├── speedbins.geojson      line chunks tagged slow|moderate|fast|highway
+├── markers.geojson        stage + day start/end Points, pre-labeled
+├── media.geojson          photos + videos placed on the map
+├── crossings.geojson      state/province transition Points
+├── places.geojson         towns along the route (osm)
+├── roads.geojson          OSM ways you rode, by highway class (osm)
+├── pois.geojson           viewpoints, peaks, fuel, historic (osm)
+├── optimal_routes.geojson  OSRM "what you should've done" (routes)
+├── weather_timeline.json  hourly weather per stage region (weather)
+├── dem/                   SRTM tiles + VRT + hillshade + contours (dem)
+├── styles/                full QGIS .qml templates
+└── stats.json             totals, per-stage breakdown, superlatives</code></pre>
+  <p class="muted">
+    CRS is plain WGS 84 (EPSG:4326). See
+    <a href="https://github.com/ejfox/moto-gpx/blob/main/docs/LAYERS.md">LAYERS.md</a>
+    for every property on every layer.
+  </p>
+</section>
+
+<hr>
+
+<section>
+  <h2>Every run ends with this</h2>
+  <p>
+    A real run on a 5,689-point Garmin file (56-mile Hudson Valley loop,
+    September 2021). Printed to console, stashed as
+    <code>stats.json.superlatives</code>:
+  </p>
+  <pre class="hero-output"><code>  ────────────────────────────────────────────────
+  superlatives
+  ────────────────────────────────────────────────
+  fastest mile      1:07 @ 53.7 mph  (13:20)
+  longest streak    14.4 min / 8.44 mi without a break
+  highest point     353m at 41.4475, -73.8507
+  lowest point      -2m at 41.4384, -73.9727
+  biggest climb     355m over 15.92 km (2.2% avg)
+  biggest descent   355m over 54.79 km (0.6% avg)
+  steepest grade    10.6% over 204m
+  longest straight  688m (0.43 mi) heading N
+  turns per mile    332° — some curves
+  time at speed     slow 62% · moderate 36% · fast 1% · highway 0%
+  time of day       afternoon 100%
+
+  telemetry
+    top speed       90 mph at 13:20  (41.4456, -73.8564)
+    0-60 mph        n/a (never came to a stop before hitting 60)
+    time > 60 mph   1.2 min (1% of ride)
+    peak cornering  0.92G at 32.2 mph through a 23m-radius turn
+    hardest brake   -0.54G  (dropped 23.6 mph in 2s)
+    biggest launch  0.76G  (gained 33.3 mph in 2s)
+    smoothness      7/10 — smooth
+
+  furthest north    41.50832°   (14:59)
+  furthest south    41.30119°   (14:20)
+  furthest east     -73.83158°   (13:04)
+  furthest west     -73.98244°   (12:43)
+
+  town signs you passed:
+    12:27  Beacon · pop. 13,769
+    12:40  Dutchess Junction (hamlet)
+    12:49  Cold Spring (village) · pop. 1,986
+    12:51  Nelsonville (hamlet) · pop. 624
+    12:59  Dennytown (hamlet)
+    13:45  Highland Falls (village) · pop. 3,684
+    …
+
+  roughly equivalent to:
+    · 999 football fields end-to-end
+    · 2.2× a marathon in distance
+    · 3.6× the Empire State Building climbed
+    · 4.6× the Eiffel Tower climbed
+    · 0.23× Mt. Kilimanjaro from base camp
+  ────────────────────────────────────────────────</code></pre>
+</section>
+
+<hr>
+
+<section>
+  <h2>Options</h2>
+
+  <h3>Core</h3>
+  <table>
+    <thead><tr><th>Flag</th><th>Default</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>--out &lt;dir&gt;</code></td><td><code>./moto-out</code></td><td>Output directory</td></tr>
+      <tr><td><code>--split &lt;mode&gt;</code></td><td><code>all</code></td><td><code>day</code> / <code>hour</code> / <code>stage</code> / <code>all</code></td></tr>
+      <tr><td><code>--break &lt;minutes&gt;</code></td><td><code>20</code></td><td>Gap threshold to start a new stage</td></tr>
+      <tr><td><code>--min-points &lt;n&gt;</code></td><td><code>10</code></td><td>Drop stages with fewer points</td></tr>
+      <tr><td><code>--simplify &lt;meters&gt;</code></td><td><code>0</code></td><td>Douglas-Peucker tolerance, 0 = off</td></tr>
+      <tr><td><code>--tz &lt;offset&gt;</code></td><td>local</td><td>Hours from UTC for day/hour bucketing</td></tr>
+      <tr><td><code>--name &lt;string&gt;</code></td><td>folder basename</td><td>Trip name, stamped into every feature</td></tr>
+    </tbody>
+  </table>
+
+  <h3>QGIS prep layers (on by default, <code>--no-&lt;name&gt;</code> to skip)</h3>
+  <table>
+    <tbody>
+      <tr><td><code>--stops</code></td><td><code>stops.geojson</code> — rest-stop + overnight Points</td></tr>
+      <tr><td><code>--speedbins</code></td><td><code>speedbins.geojson</code> — line chunks tagged by speed bucket</td></tr>
+      <tr><td><code>--markers</code></td><td><code>markers.geojson</code> — stage + day start/end Points, pre-labeled</td></tr>
+      <tr><td><code>--days-merged</code></td><td>ONE unbroken LineString per day</td></tr>
+      <tr><td><code>--styles</code></td><td>Sibling <code>.qml</code> style files for auto-load in QGIS</td></tr>
+      <tr><td><code>--superlatives</code></td><td>Post-run fun-stats banner (+ <code>stats.json.superlatives</code>)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Media (needs exiftool)</h3>
+  <table>
+    <tbody>
+      <tr><td><code>--media &lt;dir&gt;</code></td><td>Ingest JPG/HEIC/MP4/MOV as Point features</td></tr>
+      <tr><td><code>--media-tz &lt;offset&gt;</code></td><td>Override for naive EXIF timestamps</td></tr>
+    </tbody>
+  </table>
+
+  <h3>DEM (needs GDAL)</h3>
+  <table>
+    <tbody>
+      <tr><td><code>--dem</code></td><td>Fetch AWS Terrain Tiles, stitch into seamless <code>trip.vrt</code></td></tr>
+      <tr><td><code>--dem-buffer &lt;pct&gt;</code></td><td>Bbox padding percent (default 20)</td></tr>
+      <tr><td><code>--dem-contour &lt;m&gt;</code></td><td>Emit contour lines every N meters as GeoJSON</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Enrichments (opt-in, network)</h3>
+  <pre><code>--enrich weather,osm,routes,crossings,sun
+--enrich all</code></pre>
+  <table>
+    <thead><tr><th>Token</th><th>API</th><th>What lands</th></tr></thead>
+    <tbody>
+      <tr><td><code>weather</code></td><td>Open-Meteo</td><td>per-stage temp/wind/conditions + hourly <code>weather_timeline.json</code></td></tr>
+      <tr><td><code>osm</code></td><td>Overpass</td><td>roads, places, POIs, per-stage road summary</td></tr>
+      <tr><td><code>routes</code></td><td>OSRM public</td><td><code>optimal_routes.geojson</code> with <code>extra_distance_pct</code></td></tr>
+      <tr><td><code>crossings</code></td><td>Natural Earth (bundled)</td><td>state/province transition Points</td></tr>
+      <tr><td><code>sun</code></td><td>local math</td><td>altitude/azimuth/<code>is_golden_hour</code> on each photo</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<hr>
+
+<section>
+  <h2>Design</h2>
+  <ul>
+    <li><strong>Zero runtime dependencies.</strong> Stdlib + global <code>fetch</code> only. No <code>npm install</code> needed to run. <code>exiftool</code> and GDAL are the only external binaries, and only when the features that need them are enabled.</li>
+    <li><strong>Everything opt-in except the tracks.</strong> A default run hits zero external APIs. Every enrichment is a flag.</li>
+    <li><strong>Fail soft.</strong> One flaky API never aborts a run. Retries once, then logs and skips. Missing GDAL preserves raw DEM tiles so you can stitch them by hand.</li>
+    <li><strong>WGS 84 throughout.</strong> Drop into QGIS and go — no reprojection.</li>
+    <li><strong>QGIS-native output.</strong> <code>.qml</code> siblings auto-load on drag. Zero symbology configuration to get a readable map.</li>
+    <li><strong>Cache what's expensive.</strong> DEM tiles persist in <code>dem/tiles/</code>. Re-running on the same bbox is free.</li>
+  </ul>
+</section>
+
+<hr>
+
+<section>
+  <h2>Documentation</h2>
+  <ul>
+    <li><a href="https://github.com/ejfox/moto-gpx#readme">README</a> — install, CLI reference, output overview</li>
+    <li><a href="https://github.com/ejfox/moto-gpx/blob/main/docs/LAYERS.md">LAYERS.md</a> — every layer, every property, example feature JSON</li>
+    <li><a href="https://github.com/ejfox/moto-gpx/blob/main/docs/QGIS.md">QGIS.md</a> — 14-step workflow for hand-making a trip map</li>
+    <li><a href="https://github.com/ejfox/moto-gpx/blob/main/docs/TROUBLESHOOTING.md">TROUBLESHOOTING.md</a> — GDAL, exiftool, rate limits, stage detection</li>
+    <li><a href="https://github.com/ejfox/moto-gpx/blob/main/docs/ARCHITECTURE.md">ARCHITECTURE.md</a> — module layout, contracts, extension patterns</li>
+    <li><a href="https://github.com/ejfox/moto-gpx/blob/main/CHANGELOG.md">CHANGELOG.md</a> — version history</li>
+  </ul>
+</section>
+
+<footer>
+  <p class="muted mono">
+    moto-gpx · MIT ·
+    <a href="https://github.com/ejfox/moto-gpx">source</a> ·
+    by <a href="https://ejfox.com">ej fox</a>
+  </p>
+</footer>
+
+</body>
+</html>
