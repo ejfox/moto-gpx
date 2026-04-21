@@ -1,5 +1,6 @@
-// SVG preview generator — map view + elevation profile.
-// Uses d3-geo for projection/fit and d3-scale/d3-shape for the elevation chart.
+// SVG preview generator — map view, elevation profile, speed profile.
+// Uses d3-geo for projection and d3-scale/d3-shape for the profile charts.
+// Each SVG responds to prefers-color-scheme via an inline <style> block.
 
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -10,19 +11,68 @@ function esc(s) {
   return String(s).replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
 }
 
+// ---------- theme styles ----------
+// Colors drive off CSS custom properties so the SVG flips to dark mode on its
+// own when embedded on a dark page (or when the OS theme is dark).
+const THEME_STYLE = `
+  <style>
+    :root {
+      --fg: #111;
+      --muted: #555;
+      --frame: #111;
+      --fill: #ddd;
+      --peak: #c00;
+      --trough: #2a7a2a;
+      --accent-1: #7a4500;
+      --accent-2: #c00;
+      --accent-3: #3a3a9a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fg: #e8e6e3;
+        --muted: #9aa0a6;
+        --frame: #8a8a8a;
+        --fill: #2b2b2b;
+        --peak: #ff6b6b;
+        --trough: #6bd16b;
+        --accent-1: #ffb870;
+        --accent-2: #ff6b6b;
+        --accent-3: #8aa8ff;
+      }
+    }
+    .mg-bg { fill: none; }
+    .mg-fg { fill: var(--fg); }
+    .mg-muted { fill: var(--muted); }
+    .mg-frame { fill: none; stroke: var(--frame); stroke-width: 0.5; }
+    .mg-track { fill: none; stroke: var(--fg); stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; }
+    .mg-dot { fill: var(--fg); }
+    .mg-area { fill: var(--fill); stroke: none; }
+    .mg-line { fill: none; stroke: var(--fg); stroke-width: 1.2; }
+    .mg-axis { stroke: var(--frame); stroke-width: 0.5; fill: none; }
+    .mg-label { fill: var(--fg); font-family: Helvetica, Arial, sans-serif; }
+    .mg-muted-label { fill: var(--muted); font-family: Helvetica, Arial, sans-serif; }
+    .mg-peak { fill: var(--peak); }
+    .mg-trough { fill: var(--trough); }
+    .mg-peak-label { fill: var(--peak); font-family: Helvetica, Arial, sans-serif; font-weight: bold; }
+    .mg-acc-1 { stroke: var(--accent-1); fill: none; }
+    .mg-acc-1-label { fill: var(--accent-1); font-family: Helvetica, Arial, sans-serif; font-weight: bold; }
+    .mg-acc-2 { stroke: var(--accent-2); fill: none; }
+    .mg-acc-2-label { fill: var(--accent-2); font-family: Helvetica, Arial, sans-serif; font-weight: bold; }
+    .mg-acc-3 { stroke: var(--accent-3); fill: none; }
+    .mg-acc-3-label { fill: var(--accent-3); font-family: Helvetica, Arial, sans-serif; font-weight: bold; }
+    .mg-start { fill: var(--trough); stroke: var(--frame); stroke-width: 0.5; }
+    .mg-end { fill: var(--peak); stroke: var(--frame); stroke-width: 0.5; }
+  </style>`;
+
 // ---------- map preview ----------
 export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
   if (!deduped.length || !perStage.length) return null;
 
   const MAX_W = 900;
-  // Title is ~240px wide at 16px Helvetica; ensure the viewport is wide enough
-  // for the header + scale bar + attribution without clipping.
   const MIN_W = 340;
   const MAX_H = 700;
   const PAD = { top: 60, right: 30, bottom: 50, left: 30 };
 
-  // Douglas-Peucker simplify each stage — ~1 point per 3m is well below visible
-  // detail at our rendered scale and drops file size 80–90%.
   const SIMPLIFY_M = 3;
   const trackFc = {
     type: 'FeatureCollection',
@@ -36,8 +86,6 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
     })),
   };
 
-  // First pass: fit to a provisional box, then compute final H from the
-  // bounds d3 actually renders, so the frame hugs the geography on both axes.
   const provisionalInnerW = MAX_W - PAD.left - PAD.right;
   const provisionalInnerH = MAX_H - PAD.top - PAD.bottom;
 
@@ -51,8 +99,6 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
   const renderedW = bx1 - bx0;
   const renderedH = by1 - by0;
 
-  // Final viewport: tight around the track at its rendered scale, with a
-  // minimum width so the header/attribution have room to breathe.
   const W = Math.max(MIN_W, Math.round(renderedW + PAD.left + PAD.right));
   const H = Math.round(renderedH + PAD.top + PAD.bottom);
   const frameX0 = PAD.left;
@@ -63,65 +109,55 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
   const projection = d3.geoMercator()
     .fitExtent([[frameX0, frameY0], [frameX1, frameY1]], trackFc);
   const path = d3.geoPath(projection);
-
-  // --- track path ---
   const trackD = path(trackFc);
 
-  // --- start/end markers ---
   const first = deduped[0];
   const last = deduped[deduped.length - 1];
   const [sx, sy] = projection([first.lon, first.lat]);
   const [ex, ey] = projection([last.lon, last.lat]);
   const isLoop = Math.hypot(ex - sx, ey - sy) < 10;
 
-  // --- town labels (chronological, with simple overlap suppression) ---
+  // town labels with simple collision suppression
   const townMarks = [];
-  const MIN_LABEL_DX = 55;  // horizontal spread threshold
-  const MIN_LABEL_DY = 14;  // vertical spread threshold
+  const MIN_LABEL_DX = 55, MIN_LABEL_DY = 14;
   for (const pl of places || []) {
     const [x, y] = projection([pl.lon, pl.lat]);
-    const clash = townMarks.some(t =>
-      Math.abs(t.x - x) < MIN_LABEL_DX && Math.abs(t.y - y) < MIN_LABEL_DY,
-    );
-    if (clash) continue;
+    if (townMarks.some(t => Math.abs(t.x - x) < MIN_LABEL_DX && Math.abs(t.y - y) < MIN_LABEL_DY)) continue;
     townMarks.push({ x, y, name: pl.name });
     if (townMarks.length >= 15) break;
   }
 
-  // --- superlative annotations ---
+  // superlative annotations
   const annotations = [];
   if (superlatives?.highest) {
     const [x, y] = projection([superlatives.highest.lon, superlatives.highest.lat]);
-    annotations.push({ x, y, label: `peak ${superlatives.highest.ele_m}m`, color: '#7a4500' });
+    annotations.push({ x, y, label: `peak ${superlatives.highest.ele_m}m`, cls: 'acc-1' });
   }
   if (superlatives?.performance?.top_speed) {
     const ts = superlatives.performance.top_speed;
     const [x, y] = projection([ts.lon, ts.lat]);
-    annotations.push({ x, y, label: `top speed ${ts.mph} mph`, color: '#c00' });
+    annotations.push({ x, y, label: `top speed ${ts.mph} mph`, cls: 'acc-2' });
   }
   if (superlatives?.performance?.max_lateral_g) {
     const lg = superlatives.performance.max_lateral_g;
     const [x, y] = projection([lg.lon, lg.lat]);
-    annotations.push({ x, y, label: `${lg.g}G @ ${lg.speed_mph}mph`, color: '#3a3a9a' });
+    annotations.push({ x, y, label: `${lg.g}G @ ${lg.speed_mph}mph`, cls: 'acc-3' });
   }
 
-  // --- scale bar ---
-  // Compute projected pixels per km by projecting two points 1km apart in longitude at the map center lat.
-  const midLat = ((projection.invert([frameX0, frameY0])[1] + projection.invert([frameX1, frameY1])[1]) / 2);
-  const midLon = ((projection.invert([frameX0, frameY0])[0] + projection.invert([frameX1, frameY1])[0]) / 2);
-  const oneKmLon = 1 / (111.320 * Math.cos(midLat * Math.PI / 180));
-  const [px0] = projection([midLon, midLat]);
-  const [px1] = projection([midLon + oneKmLon, midLat]);
+  // scale bar
+  const [pMidLon, pMidLat] = projection.invert([(frameX0 + frameX1) / 2, (frameY0 + frameY1) / 2]);
+  const oneKmLon = 1 / (111.320 * Math.cos(pMidLat * Math.PI / 180));
+  const [px0] = projection([pMidLon, pMidLat]);
+  const [px1] = projection([pMidLon + oneKmLon, pMidLat]);
   const pixelsPerKm = Math.abs(px1 - px0);
   const targetKm = Math.max(1, Math.round(((frameX1 - frameX0) * 0.2) / pixelsPerKm));
   const niceKm = [1, 2, 5, 10, 20, 50, 100].reduce(
-    (best, k) => Math.abs(k - targetKm) < Math.abs(best - targetKm) ? k : best, 1
+    (best, k) => Math.abs(k - targetKm) < Math.abs(best - targetKm) ? k : best, 1,
   );
   const scalePx = niceKm * pixelsPerKm;
   const scaleX = frameX0;
   const scaleY = H - 25;
 
-  // --- header ---
   const title = esc(opts.name || 'moto-gpx');
   const stats = (() => {
     const t = perStage.reduce(
@@ -136,23 +172,21 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
     return `${t.km.toFixed(1)} km · ${(t.km * 0.621371).toFixed(1)} mi · ${h}h${String(m).padStart(2, '0')} moving`;
   })();
 
-  // --- compose SVG ---
-  const bg = `<rect x="0" y="0" width="${W}" height="${H}" fill="white"/>`;
   const titleSvg = `
-    <text x="${frameX0}" y="28" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="bold" fill="#111">${title}</text>
-    <text x="${frameX0}" y="46" font-family="Helvetica, Arial, sans-serif" font-size="11" fill="#555">${esc(stats)}</text>`;
-  const frame = `<rect x="${frameX0}" y="${frameY0}" width="${renderedW.toFixed(1)}" height="${renderedH.toFixed(1)}" fill="none" stroke="#111" stroke-width="0.5"/>`;
-  const track = `<path d="${trackD}" fill="none" stroke="#111" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>`;
-  const startEnd =
-    `<polygon points="${sx.toFixed(1)},${(sy - 5).toFixed(1)} ${(sx - 4.5).toFixed(1)},${(sy + 3).toFixed(1)} ${(sx + 4.5).toFixed(1)},${(sy + 3).toFixed(1)}" fill="#2a7a2a" stroke="#111" stroke-width="0.5"/>` +
-    (!isLoop
-      ? `<rect x="${(ex - 4).toFixed(1)}" y="${(ey - 4).toFixed(1)}" width="8" height="8" fill="#b33a3a" stroke="#111" stroke-width="0.5"/>`
-      : '');
+    <text class="mg-label" x="${frameX0}" y="28" font-size="16" font-weight="bold">${title}</text>
+    <text class="mg-muted-label" x="${frameX0}" y="46" font-size="11">${esc(stats)}</text>`;
 
-  const townSvg = townMarks.map(t => {
-    return `<circle cx="${t.x.toFixed(1)}" cy="${t.y.toFixed(1)}" r="2" fill="#111"/>` +
-      `<text x="${(t.x + 5).toFixed(1)}" y="${(t.y - 4).toFixed(1)}" font-family="Helvetica, Arial, sans-serif" font-size="10" fill="#111">${esc(t.name)}</text>`;
-  }).join('\n  ');
+  const frame = `<rect class="mg-frame" x="${frameX0}" y="${frameY0}" width="${renderedW.toFixed(1)}" height="${renderedH.toFixed(1)}"/>`;
+  const track = `<path class="mg-track" d="${trackD}"/>`;
+
+  const startEnd =
+    `<polygon class="mg-start" points="${sx.toFixed(1)},${(sy - 5).toFixed(1)} ${(sx - 4.5).toFixed(1)},${(sy + 3).toFixed(1)} ${(sx + 4.5).toFixed(1)},${(sy + 3).toFixed(1)}"/>` +
+    (!isLoop ? `<rect class="mg-end" x="${(ex - 4).toFixed(1)}" y="${(ey - 4).toFixed(1)}" width="8" height="8"/>` : '');
+
+  const townSvg = townMarks.map(t =>
+    `<circle class="mg-dot" cx="${t.x.toFixed(1)}" cy="${t.y.toFixed(1)}" r="2"/>` +
+    `<text class="mg-label" x="${(t.x + 5).toFixed(1)}" y="${(t.y - 4).toFixed(1)}" font-size="10">${esc(t.name)}</text>`
+  ).join('\n  ');
 
   const annotationSvg = annotations.map((a, i) => {
     const approxW = a.label.length * 6.5;
@@ -162,21 +196,21 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
     let dy = i % 2 === 0 ? -8 : 14;
     if (a.y + dy < frameY0 + 10) dy = 14;
     if (a.y + dy > frameY1 - 4) dy = -8;
-    return `<circle cx="${a.x.toFixed(1)}" cy="${a.y.toFixed(1)}" r="3.5" fill="none" stroke="${a.color}" stroke-width="1.5"/>` +
-      `<text x="${(a.x + dx).toFixed(1)}" y="${(a.y + dy).toFixed(1)}" text-anchor="${anchor}" font-family="Helvetica, Arial, sans-serif" font-size="10" font-weight="bold" fill="${a.color}">${esc(a.label)}</text>`;
+    return `<circle class="mg-${a.cls}" cx="${a.x.toFixed(1)}" cy="${a.y.toFixed(1)}" r="3.5" stroke-width="1.5"/>` +
+      `<text class="mg-${a.cls}-label" x="${(a.x + dx).toFixed(1)}" y="${(a.y + dy).toFixed(1)}" text-anchor="${anchor}" font-size="10">${esc(a.label)}</text>`;
   }).join('\n  ');
 
   const scaleBar = `
-    <line x1="${scaleX.toFixed(1)}" y1="${scaleY}" x2="${(scaleX + scalePx).toFixed(1)}" y2="${scaleY}" stroke="#111" stroke-width="1.5"/>
-    <line x1="${scaleX.toFixed(1)}" y1="${(scaleY - 4)}" x2="${scaleX.toFixed(1)}" y2="${(scaleY + 4)}" stroke="#111" stroke-width="1.5"/>
-    <line x1="${(scaleX + scalePx).toFixed(1)}" y1="${(scaleY - 4)}" x2="${(scaleX + scalePx).toFixed(1)}" y2="${(scaleY + 4)}" stroke="#111" stroke-width="1.5"/>
-    <text x="${(scaleX + scalePx / 2).toFixed(1)}" y="${(scaleY - 7)}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="10" fill="#111">${niceKm} km</text>`;
+    <line class="mg-axis" x1="${scaleX.toFixed(1)}" y1="${scaleY}" x2="${(scaleX + scalePx).toFixed(1)}" y2="${scaleY}" stroke-width="1.5"/>
+    <line class="mg-axis" x1="${scaleX.toFixed(1)}" y1="${(scaleY - 4)}" x2="${scaleX.toFixed(1)}" y2="${(scaleY + 4)}" stroke-width="1.5"/>
+    <line class="mg-axis" x1="${(scaleX + scalePx).toFixed(1)}" y1="${(scaleY - 4)}" x2="${(scaleX + scalePx).toFixed(1)}" y2="${(scaleY + 4)}" stroke-width="1.5"/>
+    <text class="mg-label" x="${(scaleX + scalePx / 2).toFixed(1)}" y="${(scaleY - 7)}" text-anchor="middle" font-size="10">${niceKm} km</text>`;
 
-  const footer = `<text x="${frameX1}" y="${(H - 18)}" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="9" fill="#888">moto-gpx · mercator</text>`;
+  const footer = `<text class="mg-muted-label" x="${frameX1}" y="${(H - 18)}" text-anchor="end" font-size="9">moto-gpx · mercator</text>`;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
-  ${bg}
+  ${THEME_STYLE}
   ${titleSvg}
   ${frame}
   ${track}
@@ -188,84 +222,133 @@ export function renderMapSvg(perStage, deduped, opts, superlatives, places) {
 </svg>`;
 }
 
-// ---------- elevation profile ----------
-export function renderElevationSvg(deduped /* perStage unused but kept for symmetry */) {
-  const elePoints = [];
-  let cumD = 0;
-  for (let i = 0; i < deduped.length; i++) {
-    if (i > 0) cumD += haversine(deduped[i - 1], deduped[i]);
-    if (deduped[i].ele != null) {
-      elePoints.push({ x: cumD, y: deduped[i].ele });
-    }
-  }
-  if (elePoints.length < 3) return null;
+// ---------- profile charts (shared shape) ----------
+// data: [{ x, y }] where x is meters, y is the measured value
+// peakLabel / troughLabel: e.g. '353m peak', '90 mph top', null to skip
+function renderProfile({ title, data, yUnit, xAxisLabel, highlightMax, highlightMin }) {
+  if (data.length < 3) return null;
 
   const W = 900;
   const H = 220;
-  const PAD = { top: 30, right: 30, bottom: 40, left: 50 };
+  const PAD = { top: 30, right: 30, bottom: 40, left: 55 };
   const innerW = W - PAD.left - PAD.right;
   const innerH = H - PAD.top - PAD.bottom;
 
-  const [xMin, xMax] = d3.extent(elePoints, p => p.x);
-  const [yMin, yMax] = d3.extent(elePoints, p => p.y);
+  const [xMin, xMax] = d3.extent(data, p => p.x);
+  const [yMin, yMax] = d3.extent(data, p => p.y);
   const yPad = (yMax - yMin) * 0.1 || 10;
 
-  // Downsample to ~1 point per rendered pixel. Saves 90% of bytes, visually identical.
+  // Downsample to ~1 point per rendered pixel.
   const targetPts = 900;
-  const stride = Math.max(1, Math.floor(elePoints.length / targetPts));
+  const stride = Math.max(1, Math.floor(data.length / targetPts));
   const sampled = [];
-  for (let i = 0; i < elePoints.length; i += stride) sampled.push(elePoints[i]);
-  if (sampled[sampled.length - 1] !== elePoints[elePoints.length - 1]) sampled.push(elePoints[elePoints.length - 1]);
+  for (let i = 0; i < data.length; i += stride) sampled.push(data[i]);
+  if (sampled[sampled.length - 1] !== data[data.length - 1]) sampled.push(data[data.length - 1]);
 
   const x = d3.scaleLinear().domain([xMin, xMax]).range([PAD.left, PAD.left + innerW]);
-  const y = d3.scaleLinear().domain([yMin - yPad, yMax + yPad]).range([PAD.top + innerH, PAD.top]);
+  const y = d3.scaleLinear().domain([Math.max(0, yMin - yPad), yMax + yPad]).range([PAD.top + innerH, PAD.top]);
 
   const area = d3.area()
     .x(d => x(d.x))
-    .y0(y(yMin - yPad))
+    .y0(y(y.domain()[0]))
     .y1(d => y(d.y));
-  const line = d3.line()
-    .x(d => x(d.x))
-    .y(d => y(d.y));
+  const line = d3.line().x(d => x(d.x)).y(d => y(d.y));
 
   const areaD = area(sampled);
   const lineD = line(sampled);
 
-  const peak = elePoints.reduce((a, b) => (b.y > a.y ? b : a));
-  const trough = elePoints.reduce((a, b) => (b.y < a.y ? b : a));
+  const peak = data.reduce((a, b) => (b.y > a.y ? b : a));
+  const trough = data.reduce((a, b) => (b.y < a.y ? b : a));
 
-  // X ticks at nice km intervals via d3
   const xKm = x.copy().domain([xMin / 1000, xMax / 1000]);
   const ticks = xKm.ticks(6);
   const xTickSvg = ticks.map(k => {
     const px = x(k * 1000);
-    return `<line x1="${px.toFixed(1)}" y1="${(PAD.top + innerH)}" x2="${px.toFixed(1)}" y2="${(PAD.top + innerH + 4)}" stroke="#111" stroke-width="0.5"/>` +
-      `<text x="${px.toFixed(1)}" y="${(PAD.top + innerH + 16)}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="10" fill="#111">${k}</text>`;
+    return `<line class="mg-axis" x1="${px.toFixed(1)}" y1="${(PAD.top + innerH)}" x2="${px.toFixed(1)}" y2="${(PAD.top + innerH + 4)}"/>` +
+      `<text class="mg-label" x="${px.toFixed(1)}" y="${(PAD.top + innerH + 16)}" text-anchor="middle" font-size="10">${k}</text>`;
   }).join('\n  ');
 
   const yLabelSvg = `
-    <text x="${PAD.left - 8}" y="${(y(yMax) + 4).toFixed(1)}" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="10" fill="#111">${Math.round(yMax)}m</text>
-    <text x="${PAD.left - 8}" y="${(y(yMin) + 4).toFixed(1)}" text-anchor="end" font-family="Helvetica, Arial, sans-serif" font-size="10" fill="#111">${Math.round(yMin)}m</text>`;
+    <text class="mg-label" x="${PAD.left - 8}" y="${(y(yMax) + 4).toFixed(1)}" text-anchor="end" font-size="10">${Math.round(yMax)}${yUnit}</text>
+    <text class="mg-label" x="${PAD.left - 8}" y="${(y(yMin) + 4).toFixed(1)}" text-anchor="end" font-size="10">${Math.round(yMin)}${yUnit}</text>`;
+
+  const peakMark = highlightMax
+    ? `<circle class="mg-peak" cx="${x(peak.x).toFixed(1)}" cy="${y(peak.y).toFixed(1)}" r="3"/>` +
+      `<text class="mg-peak-label" x="${(x(peak.x) + 5).toFixed(1)}" y="${(y(peak.y) - 5).toFixed(1)}" font-size="10">${highlightMax(peak)}</text>`
+    : '';
+  const troughMark = highlightMin
+    ? `<circle class="mg-trough" cx="${x(trough.x).toFixed(1)}" cy="${y(trough.y).toFixed(1)}" r="3"/>`
+    : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
-  <rect x="0" y="0" width="${W}" height="${H}" fill="white"/>
-  <text x="${PAD.left}" y="20" font-family="Helvetica, Arial, sans-serif" font-size="13" font-weight="bold" fill="#111">elevation profile</text>
-  <path d="${areaD}" fill="#ddd" stroke="none"/>
-  <path d="${lineD}" fill="none" stroke="#111" stroke-width="1.2"/>
-  <line x1="${PAD.left}" y1="${(PAD.top + innerH)}" x2="${(PAD.left + innerW)}" y2="${(PAD.top + innerH)}" stroke="#111" stroke-width="0.5"/>
+  ${THEME_STYLE}
+  <text class="mg-label" x="${PAD.left}" y="20" font-size="13" font-weight="bold">${esc(title)}</text>
+  <path class="mg-area" d="${areaD}"/>
+  <path class="mg-line" d="${lineD}"/>
+  <line class="mg-axis" x1="${PAD.left}" y1="${(PAD.top + innerH)}" x2="${(PAD.left + innerW)}" y2="${(PAD.top + innerH)}"/>
   ${xTickSvg}
   ${yLabelSvg}
-  <circle cx="${x(peak.x).toFixed(1)}" cy="${y(peak.y).toFixed(1)}" r="3" fill="#c00" stroke="#111" stroke-width="0.5"/>
-  <text x="${(x(peak.x) + 5).toFixed(1)}" y="${(y(peak.y) - 5).toFixed(1)}" font-family="Helvetica, Arial, sans-serif" font-size="10" font-weight="bold" fill="#c00">${Math.round(peak.y)}m peak</text>
-  <circle cx="${x(trough.x).toFixed(1)}" cy="${y(trough.y).toFixed(1)}" r="3" fill="#2a7a2a" stroke="#111" stroke-width="0.5"/>
-  <text x="${(PAD.left + innerW / 2)}" y="${(H - 6)}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="10" fill="#555">kilometers</text>
+  ${peakMark}
+  ${troughMark}
+  <text class="mg-muted-label" x="${(PAD.left + innerW / 2)}" y="${(H - 6)}" text-anchor="middle" font-size="10">${esc(xAxisLabel)}</text>
 </svg>`;
+}
+
+// ---------- elevation profile ----------
+export function renderElevationSvg(deduped) {
+  const data = [];
+  let cumD = 0;
+  for (let i = 0; i < deduped.length; i++) {
+    if (i > 0) cumD += haversine(deduped[i - 1], deduped[i]);
+    if (deduped[i].ele != null) data.push({ x: cumD, y: deduped[i].ele });
+  }
+  return renderProfile({
+    title: 'elevation profile',
+    data,
+    yUnit: 'm',
+    xAxisLabel: 'kilometers',
+    highlightMax: p => `${Math.round(p.y)}m peak`,
+    highlightMin: true,
+  });
+}
+
+// ---------- speed profile ----------
+// 5-second sliding window smoothing (same as max_speed in stats) so single
+// GPS jitter points don't spike the chart.
+export function renderSpeedSvg(deduped) {
+  const SPEED_WINDOW_MS = 5000;
+  const data = [];
+  let cumD = 0;
+  for (let i = 0; i < deduped.length; i++) {
+    if (i > 0) cumD += haversine(deduped[i - 1], deduped[i]);
+    if (deduped[i].time == null) continue;
+    let j = i + 1;
+    let winDist = 0;
+    while (j < deduped.length) {
+      if (deduped[j].time == null) { j++; continue; }
+      winDist += haversine(deduped[j - 1], deduped[j]);
+      if ((deduped[j].time - deduped[i].time) >= SPEED_WINDOW_MS) break;
+      j++;
+    }
+    if (j >= deduped.length) break;
+    const dt = (deduped[j].time - deduped[i].time) / 1000;
+    if (dt <= 0) continue;
+    const mph = (winDist / dt) * 2.23694;
+    if (mph < 200) data.push({ x: cumD, y: mph });
+  }
+  return renderProfile({
+    title: 'speed profile',
+    data,
+    yUnit: ' mph',
+    xAxisLabel: 'kilometers',
+    highlightMax: p => `${Math.round(p.y)} mph top`,
+    highlightMin: false,
+  });
 }
 
 // ---------- orchestrator ----------
 export function writeSvgPreviews(outDir, perStage, deduped, opts, superlatives) {
-  // Read places.geojson if --enrich osm already wrote it.
   let places = null;
   try {
     const placesPath = join(outDir, 'places.geojson');
@@ -293,6 +376,11 @@ export function writeSvgPreviews(outDir, perStage, deduped, opts, superlatives) 
   if (ele) {
     writeFileSync(join(outDir, 'preview-elevation.svg'), ele);
     results.elevation = 'preview-elevation.svg';
+  }
+  const spd = renderSpeedSvg(deduped);
+  if (spd) {
+    writeFileSync(join(outDir, 'preview-speed.svg'), spd);
+    results.speed = 'preview-speed.svg';
   }
   return results;
 }

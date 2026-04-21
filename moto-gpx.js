@@ -567,6 +567,7 @@ async function main() {
   console.log(`    stats.json`);
   if (svgOut?.map) console.log(`    preview-map.svg`);
   if (svgOut?.elevation) console.log(`    preview-elevation.svg`);
+  if (svgOut?.speed) console.log(`    preview-speed.svg`);
 
   if (superlatives) printSuperlatives(superlatives, opts);
 }
